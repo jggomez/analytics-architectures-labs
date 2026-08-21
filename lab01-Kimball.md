@@ -332,6 +332,31 @@ A continuación, estructuramos el paso 3 aplicando el patrón de Arquitectura Me
 
 Dado que eliminamos Firestore, asumiremos que en PostgreSQL también replicamos una tabla `core_clientes` (con datos demográficos básicos) para poder ilustrar el concepto de Dimensión y SCD Tipo 2.
 
+#### 0. Sources
+
+```sql
+
+config {
+    type: "declaration",
+    schema: "fintech_analytics_raw",
+    name: "core_transacciones_solicitud",
+    description: "Tabla Raw de transacciones replicada vía Datastream"
+}
+
+```
+
+```sql
+
+config {
+    type: "declaration",
+    schema: "fintech_analytics_raw",
+    name: "core_usuarios",
+    description: "Tabla Raw de usuarios replicada vía Datastream"
+}
+
+
+```
+
 #### 1. Capa Silver: Limpieza y Deduplicación CDC (Staging)
 
 Los datos ingeridos por Datastream contienen metadatos (`_metadata_timestamp`, `_metadata_change_type`). La capa Silver crea vistas inmaterializadas que entregan la versión más reciente de cada registro, ignorando los eliminados lógicos.
@@ -339,30 +364,68 @@ Los datos ingeridos por Datastream contienen metadatos (`_metadata_timestamp`, `
 **Archivo: `definitions/silver/stg_usuarios.sqlx**`
 
 ```sql
-config { type: "view", schema: "silver" }
+config {
+    type: "table",
+    schema: "silver",
+    description: "Capa staging de solicitudes deduplicada con metadatos reales de Datastream"
+}
 
-WITH historial_cdc AS (
-  SELECT *, ROW_NUMBER() OVER(PARTITION BY usuario_id ORDER BY _metadata_timestamp DESC) as orden_evento
-  FROM ${ref("core_usuarios")} 
-)
-SELECT usuario_id, nombre_completo, ciudad_residencia, score_crediticio, ingreso_mensual 
-FROM historial_cdc 
-WHERE orden_evento = 1 AND _metadata_deleted = FALSE
+WITH
+  historial_cdc AS (
+  SELECT
+    solicitud_id,
+    cliente_id,
+    monto_solicitado,
+    plazo_meses,
+    estado_solicitud,
+    tasa_interes,
+    fecha_solicitud,
+    ROW_NUMBER() OVER(PARTITION BY solicitud_id ORDER BY datastream_metadata.source_timestamp DESC ) AS orden_evento
+  FROM
+    ${ref("core_transacciones_solicitud")} )
+SELECT
+  solicitud_id,
+  cliente_id,
+  monto_solicitado,
+  plazo_meses,
+  estado_solicitud,
+  tasa_interes,
+  fecha_solicitud
+FROM
+  historial_cdc
+WHERE
+  orden_evento = 1
+
 
 ```
 
 **Archivo: `definitions/silver/stg_solicitudes.sqlx**`
 
 ```sql
-config { type: "view", schema: "silver" }
+config {
+    type: "table",
+    schema: "silver"
+}
 
-WITH historial_cdc AS (
-  SELECT *, ROW_NUMBER() OVER(PARTITION BY solicitud_id ORDER BY _metadata_timestamp DESC) as orden_evento
-  FROM ${ref("core_transacciones_solicitud")} 
-)
-SELECT solicitud_id, usuario_id, monto_solicitado, plazo_meses, estado_solicitud, fecha_solicitud 
-FROM historial_cdc 
-WHERE orden_evento = 1 AND _metadata_deleted = FALSE
+WITH
+  historial_cdc AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER(PARTITION BY usuario_id ORDER BY _metadata_timestamp DESC) AS orden_evento
+  FROM
+    ${ref("core_usuarios")} )
+SELECT
+  usuario_id,
+  nombre_completo,
+  ciudad_residencia,
+  score_crediticio,
+  ingreso_mensual
+FROM
+  historial_cdc
+WHERE
+  orden_evento = 1
+  AND _metadata_deleted = FALSE
+
 
 ```
 
@@ -372,37 +435,76 @@ WHERE orden_evento = 1 AND _metadata_deleted = FALSE
 **Archivo: `definitions/gold/dim_usuarios.sqlx**`
 
 ```sql
-config { type: "incremental", schema: "edw_core", uniqueKey: ["usuario_id", "fecha_inicio_vigencia"] }
+config {
+    type: "incremental",
+    schema: "edw_core",
+    uniqueKey: ["usuario_id", "fecha_inicio_vigencia"]
+}
 
-WITH datos_actuales AS (
-  SELECT 
-    usuario_id, nombre_completo, ciudad_residencia, score_crediticio, ingreso_mensual,
+WITH
+  datos_actuales AS (
+  SELECT
+    usuario_id,
+    nombre_completo,
+    ciudad_residencia,
+    score_crediticio,
+    ingreso_mensual,
     CURRENT_TIMESTAMP() AS fecha_inicio_vigencia,
     CAST(NULL AS TIMESTAMP) AS fecha_fin_vigencia,
     TRUE AS es_registro_actual
-  FROM ${ref("stg_usuarios")}
-)
-SELECT FARM_FINGERPRINT(CONCAT(usuario_id, CAST(fecha_inicio_vigencia AS STRING))) AS usuario_sk, *
-FROM datos_actuales
+  FROM
+    ${ref("stg_usuarios")} )
+SELECT
+  FARM_FINGERPRINT(CONCAT(usuario_id, CAST(fecha_inicio_vigencia AS STRING))) AS usuario_sk,
+  *
+FROM
+  datos_actuales
+
 
 ```
 
 **Archivo: `definitions/gold/fact_solicitudes.sqlx**`
 
 ```sql
-config { type: "table", schema: "dm_creditos" }
+config {
+    type: "incremental",
+    schema: "dm_creditos"
+}
 
-SELECT 
+SELECT
   s.solicitud_id,
-  u.usuario_sk, -- Llave subrogada que conecta con la dimensión
+  u.usuario_sk,
+  -- Llave subrogada que conecta con la dimensión
   s.fecha_solicitud,
   s.monto_solicitado,
   s.estado_solicitud
-FROM ${ref("stg_solicitudes")} s -- Lee de la capa Silver
-LEFT JOIN ${ref("dim_usuarios")} u -- Cruza con la dimensión Gold
-  ON s.usuario_id = u.usuario_id
+FROM
+  ${ref("stg_solicitudes")} s
+  -- Lee de la capa Silver
+LEFT JOIN
+  ${ref("dim_usuarios")} u
+  -- Cruza con la dimensión Gold
+ON
+  s.cliente_id = u.usuario_id
   AND u.es_registro_actual = TRUE
+
 
 ```
 
 ---
+
+### Crea en Dataform los directorios, archivos y ejecútalos
+
+<img width="333" height="572" alt="Screenshot 2026-08-21 at 4 44 48 p m" src="https://github.com/user-attachments/assets/2ad78f3e-8f03-4594-adbe-fb0e4814ab6a" />
+
+------
+
+<img width="1904" height="831" alt="Screenshot 2026-08-21 at 5 13 39 p m" src="https://github.com/user-attachments/assets/92475e3a-fc99-4cde-b2ac-58a5893d8369" />
+
+------
+<img width="1598" height="508" alt="Screenshot 2026-08-21 at 5 09 56 p m" src="https://github.com/user-attachments/assets/05c79f80-7015-47a1-a6d6-1f85eceb1fbf" />
+
+------
+
+<img width="1023" height="566" alt="Screenshot 2026-08-21 at 5 09 48 p m" src="https://github.com/user-attachments/assets/da966b43-03a3-41ae-a1e8-743ebea8b7a7" />
+
