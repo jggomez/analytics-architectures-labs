@@ -16,7 +16,7 @@ Dentro de BigQuery, utilizar **Dataform** para ejecutar transformaciones SQL mod
 
 1. **Capa Silver (Staging / Limpieza):** Limpia tipos de datos y desanida el JSON de Firestore.
 2. **Capa Bus Dimensional:**
-* Crea `dim_cliente` uniendo el perfil de Firestore con el registro de Postgres.
+* Crea `dim_usuarios` uniendo el perfil de Firestore con el registro de Postgres.
 * Aplica lógica de versionamiento (SCD Tipo 2 si cambia la ciudad o score).
 3. **Capa Gold (Data Marts):**
 * Genera `fact_solicitudes` y la expone en el dataset `dm_creditos`.
@@ -25,7 +25,6 @@ Dentro de BigQuery, utilizar **Dataform** para ejecutar transformaciones SQL mod
 
 * Conectar **Looker Studio** al dataset `dm_creditos` para crear el dashboard del CEO mostrando:
 * Tasa de aprobación por hora.
-* Volumen colocado por segmento de cliente (`dim_cliente.segmento`).
 
 ---
 
