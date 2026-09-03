@@ -1,0 +1,43 @@
+# === macOS ===
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# === Editores / IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.\#*
+\#*\#
+
+# === Google Cloud / credenciales (NUNCA subir) ===
+*.json.key
+*-key.json
+*-sa.json
+service-account*.json
+credentials*.json
+client_secret*.json
+application_default_credentials.json
+.gcloudignore
+gha-creds-*.json
+
+# === Artefactos de los labs ===
+# Archivos temporales generados por los ejemplos (source.json / dest.json de Datastream, etc.)
+/source.json
+/dest.json
+*.local.sql
+scratch/
+tmp/
+out/
+
+# === Logs y varios ===
+*.log
+.env
+.env.*
+!.env.example
