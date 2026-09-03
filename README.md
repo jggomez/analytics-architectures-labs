@@ -15,6 +15,7 @@ el resultado (costo, latencia, bytes escaneados).
 |---|---|---|---|
 | **[Lab 01](lab01-Kimball.md)** | Modelado dimensional (Kimball) + arquitectura Medallion con Dataform | Cloud SQL (PostgreSQL), Firestore, Datastream, BigQuery, Dataform, Looker Studio | Pipeline CDC en tiempo real desde fuentes transaccionales hacia BigQuery, y transformación por capas Bronze → Silver → Gold (staging con deduplicación CDC, dimensiones SCD Tipo 2, tablas de hechos, data marts) |
 | **[Lab 02](lab02-BigQuery.md)** | Particionamiento, clustering y optimización de SQL en BigQuery | BigQuery (+ datasets públicos) | Tres versiones de la misma tabla (sin optimizar / particionada / particionada+clusterizada) a partir de datos públicos de taxis de NYC, y una batería de consultas para medir costo y rendimiento **antes y después** de aplicar buenas prácticas |
+| **[Lab 03](lab03-Formatos.md)** | Formatos de archivo (Parquet, Avro) y formatos de tabla abiertos (Delta Lake, Iceberg, Hudi) | BigQuery, Cloud Storage, BigLake connections | Exportar datos a CSV/Avro/Parquet y comparar tamaño y lectura; inspeccionar esquemas y metadatos por dentro; crear una tabla **Iceberg gestionada en BigQuery** con DML y time travel; inspeccionar y leer **Delta** y **Hudi** desde BigQuery; árbol de decisión de cuándo usar cada formato |
 
 ---
 
@@ -24,7 +25,8 @@ el resultado (costo, latencia, bytes escaneados).
 analytics-architectures-labs/
 ├── README.md            ← este archivo
 ├── lab01-Kimball.md     ← Lab 01: CDC + Medallion + Dataform
-└── lab02-BigQuery.md    ← Lab 02: particionamiento, clustering y tuning de SQL
+├── lab02-BigQuery.md    ← Lab 02: particionamiento, clustering y tuning de SQL
+└── lab03-Formatos.md    ← Lab 03: Parquet/Avro y formatos de tabla abiertos (Delta, Iceberg, Hudi)
 ```
 
 No hay código fuente ni build: los labs son documentos. Todo el código vive en bloques
@@ -79,7 +81,7 @@ Cada lab incluye una estimación de costo y un paso de *cleanup* al final. Revis
 
 ## Convenciones
 
-- **Región:** el Lab 02 usa la multi-región `US` (obligatorio para leer
+- **Región:** los Labs 02 y 03 usan la multi-región `US` (obligatorio para leer
   `bigquery-public-data`). El Lab 01 usa `us-central1`. No mezcles regiones entre dataset
   origen y destino en una misma operación.
 - **Placeholders:** `TU_PROYECTO` (Lab 02) y valores como IPs, contraseñas y nombres de
