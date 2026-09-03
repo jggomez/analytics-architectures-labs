@@ -7,9 +7,6 @@ datos de una **tabla pública** (viajes de taxi amarillo de Nueva York, 2018), y
 **medir el costo y el rendimiento de tus consultas antes y después** de aplicar
 particionamiento, clustering y buenas prácticas de SQL.
 
-> 📸 *A lo largo del documento, los bloques marcados con “📸” son marcadores de captura de
-> pantalla: reemplázalos por tus propias capturas de la consola web.*
-
 ---
 
 ### Objetivos
@@ -94,10 +91,15 @@ bigquery-public-data                          ┌──────────�
 │                          │     │        [ Crear conjunto de datos ]    │
 └──────────────────────────┘     └───────────────────────────────────────┘
 ```
+---
 
-> 📸 *Captura: panel “Crear conjunto de datos” con `taxi_lab` y ubicación `US`.*
+<img width="1868" height="766" alt="Screenshot 2026-09-03 at 11 39 45 a m" src="https://github.com/user-attachments/assets/9f7ac690-9d76-41fc-84c7-63cdf6e4cd9c" />
 
-> 📸 *Captura: el dataset `taxi_lab` ya visible en el panel Explorer bajo el proyecto.*
+---
+
+<img width="1040" height="628" alt="Screenshot 2026-09-03 at 11 40 09 a m" src="https://github.com/user-attachments/assets/652ccf26-36f7-4a34-b255-518cb40172e8" />
+
+---
 
 #### 1.2 Equivalente en SQL
 
@@ -139,7 +141,12 @@ Antes de copiar datos, inspecciónalos **sin lanzar consultas** (explorar así c
      modificación.
    - **Preview**: primeras filas **sin costo** (no ejecuta consulta).
 
-> 📸 *Captura: pestaña Schema de `tlc_yellow_trips_2018`.*
+---
+
+<img width="869" height="578" alt="Screenshot 2026-09-03 at 11 41 50 a m" src="https://github.com/user-attachments/assets/cb14526b-4ad4-48f4-a13c-2a546a6feca2" />
+
+---
+
 
 > 📌 **Verifica los tipos**. Si en tu región `payment_type` o `pickup_location_id` son
 > `INTEGER` en vez de `STRING`, ajusta los literales de los ejemplos (`'2'` → `2`).
@@ -159,7 +166,7 @@ bq query --use_legacy_sql=false --dry_run \
  GROUP BY payment_type'
 ```
 
-> 📸 *Captura: validador de la consola mostrando los bytes estimados.*
+<img width="1535" height="703" alt="Screenshot 2026-09-03 at 11 59 41 a m" src="https://github.com/user-attachments/assets/28167114-eabe-43a5-b137-6f9fde35dafb" />
 
 ---
 
@@ -210,6 +217,13 @@ WHERE pickup_datetime >= TIMESTAMP('2018-01-01')
 > 2018 tiene 365 días → 365 particiones (el máximo por tabla es **10.000**). El filtro de
 > fechas es lo que mantiene el número de particiones acotado.
 
+---
+
+<img width="501" height="690" alt="Screenshot 2026-09-03 at 12 12 47 p m" src="https://github.com/user-attachments/assets/bc101dfc-381f-4d34-8d9c-1f4a81032b52" />
+
+---
+
+
 #### 3.3 `trips_optimized` — partición por MES + clustering + guardrail
 
 ```sql
@@ -234,9 +248,15 @@ WHERE pickup_datetime >= TIMESTAMP('2018-01-01')
 - `require_partition_filter = TRUE` → toda consulta **debe** filtrar `pickup_datetime`
   o falla. Es un freno de costos.
 
-> 📸 *Captura: las tres tablas `trips_*` en el Explorer, y la pestaña Details de
-> `trips_optimized` mostrando “Partitioned by: pickup_datetime (Monthly)” y
-> “Clustered by: payment_type, pickup_location_id”.*
+---
+
+<img width="510" height="735" alt="Screenshot 2026-09-03 at 12 13 46 p m" src="https://github.com/user-attachments/assets/e99ea904-da29-4c26-ad9b-f26121ee8e3e" />
+
+---
+
+<img width="815" height="356" alt="Screenshot 2026-09-03 at 12 09 51 p m" src="https://github.com/user-attachments/assets/fa2dea1e-0a5d-4807-a341-3c8122395295" />
+
+---
 
 #### 3.4 Versión CLI (opcional)
 
@@ -273,20 +293,8 @@ ORDER BY table_name;
 Esperado (aprox.): `trips_partitioned` → ~365 particiones; `trips_optimized` → 12;
 `trips_raw` → 1 partición especial (`__UNPARTITIONED__`).
 
-#### 4.2 Tamaño de almacenamiento
 
-```sql
-SELECT
-  table_name,
-  total_rows,
-  ROUND(total_logical_bytes  / POW(1024, 3), 2) AS gb_logicos,
-  ROUND(total_physical_bytes / POW(1024, 3), 2) AS gb_fisicos
-FROM `TU_PROYECTO.taxi_lab.INFORMATION_SCHEMA.TABLE_STORAGE`
-WHERE table_name LIKE 'trips_%'
-ORDER BY table_name;
-```
-
-> 📸 *Captura: resultado de 4.1 y 4.2.*
+<img width="827" height="229" alt="Screenshot 2026-09-03 at 12 16 59 p m" src="https://github.com/user-attachments/assets/571cf453-5d44-49bd-98e8-344d543f35d0" />
 
 ---
 
@@ -309,6 +317,10 @@ WHERE pickup_datetime >= TIMESTAMP('2018-06-01')
   AND pickup_datetime <  TIMESTAMP('2018-07-01');
 ```
 
+<img width="447" height="440" alt="Screenshot 2026-09-03 at 12 29 05 p m" src="https://github.com/user-attachments/assets/329ec6bd-c1c8-4156-89ce-f39ac08dbccd" />
+
+---
+
 #### Consulta Q2 — filtro por fecha + columna de cluster
 
 ```sql
@@ -319,6 +331,10 @@ WHERE pickup_datetime >= TIMESTAMP('2018-06-01')
   AND payment_type = '2'
 GROUP BY payment_type;
 ```
+
+<img width="419" height="443" alt="Screenshot 2026-09-03 at 12 31 01 p m" src="https://github.com/user-attachments/assets/af57fd36-f1fd-4086-9dec-f7a75a8e7f7a" />
+
+--
 
 #### Consulta Q3 — agregación por zona (3 meses) con `ORDER BY ... LIMIT`
 
@@ -335,6 +351,108 @@ GROUP BY pickup_location_id
 ORDER BY viajes DESC
 LIMIT 20;
 ```
+
+<img width="434" height="399" alt="Screenshot 2026-09-03 at 12 31 45 p m" src="https://github.com/user-attachments/assets/011d23d4-014a-4ac4-957f-4e16a6c63d41" />
+
+--
+
+#### Consulta Q1 — filtro por rango de fechas (1 mes) - Partitioned
+
+```sql
+-- Cambia trips_raw por trips_partitioned y trips_optimized
+SELECT COUNT(*) AS viajes, ROUND(AVG(fare_amount), 2) AS tarifa_promedio
+FROM `TU_PROYECTO.taxi_lab.trips_partitioned`
+WHERE pickup_datetime >= TIMESTAMP('2018-06-01')
+  AND pickup_datetime <  TIMESTAMP('2018-07-01');
+```
+
+<img width="445" height="404" alt="Screenshot 2026-09-03 at 12 32 49 p m" src="https://github.com/user-attachments/assets/244d13b8-8fff-4a31-a084-f8907dfb6d16" />
+
+---
+
+#### Consulta Q2 — filtro por fecha + columna de cluster - Partitioned
+
+```sql
+SELECT payment_type, COUNT(*) AS viajes, ROUND(SUM(tip_amount), 2) AS propinas
+FROM `TU_PROYECTO.taxi_lab.trips_partitioned`
+WHERE pickup_datetime >= TIMESTAMP('2018-06-01')
+  AND pickup_datetime <  TIMESTAMP('2018-07-01')
+  AND payment_type = '2'
+GROUP BY payment_type;
+```
+
+<img width="433" height="440" alt="Screenshot 2026-09-03 at 12 34 35 p m" src="https://github.com/user-attachments/assets/5c4a3e89-5216-4124-bd3d-d45c08964ba4" />
+
+--
+
+#### Consulta Q3 — agregación por zona (3 meses) con `ORDER BY ... LIMIT` - Partitioned
+
+```sql
+SELECT
+  pickup_location_id,
+  COUNT(*)                      AS viajes,
+  ROUND(AVG(total_amount), 2)   AS ticket_promedio,
+  ROUND(AVG(trip_distance), 2)  AS distancia_promedio
+FROM `TU_PROYECTO.taxi_lab.trips_partitioned`
+WHERE pickup_datetime >= TIMESTAMP('2018-01-01')
+  AND pickup_datetime <  TIMESTAMP('2018-04-01')
+GROUP BY pickup_location_id
+ORDER BY viajes DESC
+LIMIT 20;
+```
+
+<img width="436" height="455" alt="Screenshot 2026-09-03 at 12 35 33 p m" src="https://github.com/user-attachments/assets/91a63b16-3ea4-486e-beab-e3840122a048" />
+
+--
+
+#### Consulta Q1 — filtro por rango de fechas (1 mes) - Partitioned & Clustering
+
+```sql
+-- Cambia trips_raw por trips_partitioned y trips_optimized
+SELECT COUNT(*) AS viajes, ROUND(AVG(fare_amount), 2) AS tarifa_promedio
+FROM `TU_PROYECTO.taxi_lab.trips_optimized`
+WHERE pickup_datetime >= TIMESTAMP('2018-06-01')
+  AND pickup_datetime <  TIMESTAMP('2018-07-01');
+```
+
+<img width="435" height="397" alt="Screenshot 2026-09-03 at 12 46 02 p m" src="https://github.com/user-attachments/assets/95d4df2f-38d8-462e-a7eb-a90577943627" />
+
+---
+
+#### Consulta Q2 — filtro por fecha + columna de cluster - Partitioned & Clustering
+
+```sql
+SELECT payment_type, COUNT(*) AS viajes, ROUND(SUM(tip_amount), 2) AS propinas
+FROM `TU_PROYECTO.taxi_lab.trips_optimized`
+WHERE pickup_datetime >= TIMESTAMP('2018-06-01')
+  AND pickup_datetime <  TIMESTAMP('2018-07-01')
+  AND payment_type = '2'
+GROUP BY payment_type;
+```
+
+<img width="432" height="444" alt="Screenshot 2026-09-03 at 12 46 51 p m" src="https://github.com/user-attachments/assets/228b9906-d7f6-4fc6-88d0-78b0234db26b" />
+
+--
+
+#### Consulta Q3 — agregación por zona (3 meses) con `ORDER BY ... LIMIT` - Partitioned & Clustering
+
+```sql
+SELECT
+  pickup_location_id,
+  COUNT(*)                      AS viajes,
+  ROUND(AVG(total_amount), 2)   AS ticket_promedio,
+  ROUND(AVG(trip_distance), 2)  AS distancia_promedio
+FROM `TU_PROYECTO.taxi_lab.trips_optimized`
+WHERE pickup_datetime >= TIMESTAMP('2018-01-01')
+  AND pickup_datetime <  TIMESTAMP('2018-04-01')
+GROUP BY pickup_location_id
+ORDER BY viajes DESC
+LIMIT 20;
+```
+
+<img width="425" height="403" alt="Screenshot 2026-09-03 at 12 47 30 p m" src="https://github.com/user-attachments/assets/46590ae0-1a1e-4eee-962e-e296cda6fecd" />
+
+--
 
 #### Tabla comparativa (rellénala con tus números)
 
@@ -360,9 +478,6 @@ LIMIT 20;
   depende de la selectividad del valor).
 - Con particiones pequeñas puedes toparte con el **mínimo de facturación de ~10 MB por
   tabla y consulta**: es normal que consultas muy podadas “no bajen más”.
-
-> 📸 *Captura: “Execution details” de Q1 en `trips_raw` vs `trips_optimized` (comparar
-> Bytes billed).*
 
 #### Medir todas las consultas de una vez con `INFORMATION_SCHEMA`
 
@@ -449,7 +564,7 @@ column(s) 'pickup_datetime' that can be used for partition elimination.`
 Añade el filtro de fecha y funciona. Este `OPTIONS` evita escaneos accidentales de la
 tabla entera.
 
-> 📸 *Captura: el error de `require_partition_filter`.*
+<img width="1120" height="593" alt="Screenshot 2026-09-03 at 12 52 47 p m" src="https://github.com/user-attachments/assets/7ecfba84-92aa-476a-b930-cd7d72ef1b3d" />
 
 ---
 
@@ -555,8 +670,6 @@ de `JOIN` mira:
 
 Invierte el orden de las tablas en el `FROM/JOIN` y vuelve a ejecutar: comprueba si el
 plan cambia o si el optimizador produce el mismo gráfico. Anota tu observación.
-
-> 📸 *Captura: pestaña “Execution graph” marcando la etapa JOIN y el broadcast.*
 
 ---
 
