@@ -10,8 +10,11 @@ y entender cuándo elegir cada uno:
   metadatos con ACID sobre archivos Parquet).
 
 El *hands-on* de escritura se concentra en **Parquet/Avro** (Parte A) e **Iceberg
-gestionado en BigQuery** (Parte C). **Delta** y **Hudi** se ven en modo
-**inspección + lectura desde BigQuery** (Parte D), sin necesidad de Spark.
+gestionado en BigQuery** (Parte C). **Delta** se ve en modo inspección + lectura sin Spark
+(Parte D1) y **Hudi** de forma conceptual (Parte D2).
+
+> ✅ Los comandos de este lab se ejecutaron end-to-end contra un proyecto real
+> (2026-09-03). Donde el resultado real difería de lo esperado, el texto lo refleja.
 
 ---
 
@@ -24,9 +27,8 @@ Al terminar podrás:
    **esquema embebido** de un Avro.
 3. Explicar qué problema resuelven Delta / Iceberg / Hudi frente a “Parquet suelto”.
 4. Crear una **tabla Iceberg gestionada en BigQuery**, hacer `INSERT/UPDATE/DELETE/MERGE`,
-   usar **time travel** y leer sus **metadatos** en Cloud Storage.
-5. Inspeccionar el *transaction log* de **Delta Lake** y la *timeline* de **Hudi**, y
-   leer ambas desde BigQuery.
+   usar **time travel** y materializar/inspeccionar sus **metadatos** en Cloud Storage.
+5. Inspeccionar el *transaction log* de **Delta Lake** y leerlo desde BigQuery.
 6. Elegir el formato adecuado con un **árbol de decisión**.
 
 ### Prerrequisitos
@@ -43,8 +45,8 @@ Al terminar podrás:
 
 | Concepto | En este lab | Costo |
 |---|---|---|
-| Consultas BigQuery | < 10 GiB escaneados | Primer 1 TiB/mes gratis → **~$0** |
-| Almacenamiento BigQuery + GCS | < 2 GB, borrado al final | Capa gratuita → **~$0** |
+| Consultas BigQuery | ≈ 25 GiB escaneados (5 `EXPORT DATA` de ~4 GiB + consultas) | Primer 1 TiB/mes gratis → **~$0** |
+| Almacenamiento GCS | ≈ 3 GB (sobre todo el CSV sin comprimir), borrado al final | Capa gratuita → **~$0** |
 | Cómputo | Ninguno (sin Dataproc/Spark) | **$0** |
 
 Incluye paso de limpieza al final.
@@ -73,8 +75,8 @@ bq --location="$LOCATION" mk --dataset \
 ```
 Parte A  Parquet vs Avro         EXPORT DATA → GCS → inspección → tabla externa
 Parte B  ¿Por qué tablas abiertas?  Parquet suelto NO tiene ACID / UPDATE / time travel
-Parte C  Iceberg gestionado       CREATE TABLE ... table_format='ICEBERG' → DML → time travel → metadatos
-Parte D  Delta + Hudi (lectura)   inspeccionar _delta_log / .hoodie  +  tabla externa BigLake
+Parte C  Iceberg gestionado       CREATE TABLE table_format='ICEBERG' → DML → time travel → EXPORT TABLE METADATA
+Parte D  Delta (lectura) + Hudi (concepto)
 Parte E  Decisión + limpieza + retos
 ```
 
@@ -82,76 +84,126 @@ Parte E  Decisión + limpieza + retos
 
 ## Parte A — Parquet vs Avro
 
-Usamos una tabla pública mediana: `bigquery-public-data.london_bicycles.cycle_hire`
-(~24M filas de alquileres de bicis en Londres).
+Fuente: `bigquery-public-data.london_bicycles.cycle_hire` — **83,4 M filas, ~10 GB**.
+Para que los `EXPORT DATA` sean rápidos y baratos trabajamos con la **rebanada de 2016**
+(~13 M filas) y con un juego de **9 columnas**, incluidas dos de texto repetitivo
+(`start_station_name`, `end_station_name`) que es donde el formato columnar más se nota.
 
-### A1. Exportar la misma consulta a tres formatos
+### A1. Exportar la misma consulta a varios formatos y compresiones
 
 Ejecuta en el editor de BigQuery (uno por uno). El `uri` **debe** contener un `*`.
 
 ```sql
--- CSV comprimido
+-- 1) CSV SIN comprimir (referencia)
 EXPORT DATA OPTIONS(
-  uri = 'gs://TU_BUCKET/expA/csv/hire-*.csv.gz',
+  uri = 'gs://TU_BUCKET/expA/csv-raw/h-*.csv',
+  format = 'CSV', header = true, overwrite = true
+) AS
+SELECT rental_id, duration, bike_id, start_date, end_date,
+       start_station_id, start_station_name, end_station_id, end_station_name
+FROM `bigquery-public-data.london_bicycles.cycle_hire`
+WHERE start_date >= '2016-01-01' AND start_date < '2017-01-01';
+```
+
+```sql
+-- 2) CSV + GZIP
+EXPORT DATA OPTIONS(
+  uri = 'gs://TU_BUCKET/expA/csv-gzip/h-*.csv.gz',
   format = 'CSV', compression = 'GZIP', header = true, overwrite = true
 ) AS
-SELECT rental_id, duration, bike_id, start_date, start_station_id, end_station_id
-FROM `bigquery-public-data.london_bicycles.cycle_hire`;
+SELECT rental_id, duration, bike_id, start_date, end_date,
+       start_station_id, start_station_name, end_station_id, end_station_name
+FROM `bigquery-public-data.london_bicycles.cycle_hire`
+WHERE start_date >= '2016-01-01' AND start_date < '2017-01-01';
 ```
 
 ```sql
--- Avro (fila, binario) con compresión DEFLATE
+-- 3) Avro + DEFLATE (fila, binario, esquema embebido)
 EXPORT DATA OPTIONS(
-  uri = 'gs://TU_BUCKET/expA/avro/hire-*.avro',
+  uri = 'gs://TU_BUCKET/expA/avro/h-*.avro',
   format = 'AVRO', compression = 'DEFLATE', overwrite = true
 ) AS
-SELECT rental_id, duration, bike_id, start_date, start_station_id, end_station_id
-FROM `bigquery-public-data.london_bicycles.cycle_hire`;
+SELECT rental_id, duration, bike_id, start_date, end_date,
+       start_station_id, start_station_name, end_station_id, end_station_name
+FROM `bigquery-public-data.london_bicycles.cycle_hire`
+WHERE start_date >= '2016-01-01' AND start_date < '2017-01-01';
 ```
 
 ```sql
--- Parquet (columnar) con SNAPPY
+-- 4) Parquet + SNAPPY (columnar, compresión rápida)
 EXPORT DATA OPTIONS(
-  uri = 'gs://TU_BUCKET/expA/parquet-snappy/hire-*.parquet',
+  uri = 'gs://TU_BUCKET/expA/parquet-snappy/h-*.parquet',
   format = 'PARQUET', compression = 'SNAPPY', overwrite = true
 ) AS
-SELECT rental_id, duration, bike_id, start_date, start_station_id, end_station_id
-FROM `bigquery-public-data.london_bicycles.cycle_hire`;
+SELECT rental_id, duration, bike_id, start_date, end_date,
+       start_station_id, start_station_name, end_station_id, end_station_name
+FROM `bigquery-public-data.london_bicycles.cycle_hire`
+WHERE start_date >= '2016-01-01' AND start_date < '2017-01-01';
 ```
 
 ```sql
--- Parquet con GZIP (mejor ratio, más CPU)
+-- 5) Parquet + ZSTD (columnar, mejor ratio)
 EXPORT DATA OPTIONS(
-  uri = 'gs://TU_BUCKET/expA/parquet-gzip/hire-*.parquet',
-  format = 'PARQUET', compression = 'GZIP', overwrite = true
+  uri = 'gs://TU_BUCKET/expA/parquet-zstd/h-*.parquet',
+  format = 'PARQUET', compression = 'ZSTD', overwrite = true
 ) AS
-SELECT rental_id, duration, bike_id, start_date, start_station_id, end_station_id
-FROM `bigquery-public-data.london_bicycles.cycle_hire`;
+SELECT rental_id, duration, bike_id, start_date, end_date,
+       start_station_id, start_station_name, end_station_id, end_station_name
+FROM `bigquery-public-data.london_bicycles.cycle_hire`
+WHERE start_date >= '2016-01-01' AND start_date < '2017-01-01';
 ```
 
 Compara el tamaño total en disco de cada carpeta:
 
 ```bash
-for f in csv avro parquet-snappy parquet-gzip; do
+for f in csv-raw csv-gzip avro parquet-snappy parquet-zstd; do
   printf "%-16s " "$f"; gcloud storage du -s "$BUCKET/expA/$f"
 done
 ```
 
-**Qué esperar:** `CSV.gz` es el más grande; Avro/DEFLATE queda en medio; **Parquet es el
-más pequeño** (codificación por columna + diccionarios), y GZIP < SNAPPY.
+**Resultado real (rebanada 2016, 9 columnas):**
+
+| Formato | Tamaño aprox. |
+|---|---:|
+| CSV sin comprimir | **~1,37 GB** |
+| Avro + DEFLATE | ~373 MB |
+| CSV + GZIP | ~298 MB |
+| Parquet + SNAPPY | ~298 MB |
+| Parquet + ZSTD | **~257 MB** |
+
+**Lo que enseña este resultado:**
+
+1. **La compresión domina.** El salto grande es comprimir vs no comprimir (~1,37 GB → ~300 MB),
+   no el contenedor.
+2. Entre formatos comprimidos, las diferencias aquí son **modestas**: el **códec**
+   (ZSTD/GZIP frente a SNAPPY) pesa tanto como elegir Parquet o Avro.
+3. Parquet **no siempre es el archivo más pequeño**; con pocas columnas numéricas incluso
+   puede empatar o quedar por encima de CSV+GZIP. **Su ventaja real es la lectura
+   selectiva**, que se mide en A3.
 
 ### A2. Mirar los archivos por dentro
+
+`EXPORT DATA` reparte la salida en muchos *shards* y **algunos salen vacíos** (0 filas).
+Elige uno con datos (p. ej. el `-000000000001`, o el más grande):
 
 ```bash
 pip install --quiet parquet-tools fastavro
 
-gcloud storage cp "$BUCKET/expA/parquet-snappy/hire-000000000000.parquet" /tmp/s.parquet
+BIG=$(gcloud storage ls -l "$BUCKET/expA/parquet-snappy/h-*.parquet" \
+      | sort -n | tail -2 | head -1 | awk '{print $NF}')
+gcloud storage cp "$BIG" /tmp/s.parquet
+
 parquet-tools inspect /tmp/s.parquet     # esquema, num_row_groups, codec, min/max por columna
 parquet-tools show --head 5 /tmp/s.parquet
 ```
 
+Verás algo como: `num_rows: ~98000`, `num_row_groups: 1`, y por columna el códec y las
+estadísticas, p. ej. `duration min=-3180 max=532920` (¡duraciones negativas! dato sucio
+de la fuente) o `start_date min=2016-01-01 max=2016-12-31`.
+
 ```bash
-gcloud storage cp "$BUCKET/expA/avro/hire-000000000000.avro" /tmp/a.avro
+A=$(gcloud storage ls -l "$BUCKET/expA/avro/h-*.avro" | sort -n | tail -2 | head -1 | awk '{print $NF}')
+gcloud storage cp "$A" /tmp/a.avro
 python3 - <<'PY'
 import json, fastavro
 with open('/tmp/a.avro', 'rb') as f:
@@ -165,33 +217,42 @@ PY
 
 **Observa:**
 - Parquet trae **row groups** y **estadísticas min/max por columna** → el motor puede
-  saltarse bloques enteros (*predicate pushdown*) y leer solo las columnas pedidas.
+  saltarse bloques enteros (*predicate pushdown*) y leer **solo las columnas pedidas**.
 - Avro trae el **esquema completo en el header** (autodescriptivo, pensado para
   evolución de esquema), pero es **por fila**: para leer una columna hay que leer la fila
   entera.
 
-### A3. Leer cada formato desde BigQuery
+### A3. Leer cada formato desde BigQuery — la lectura selectiva
 
 ```sql
 CREATE OR REPLACE EXTERNAL TABLE `TU_PROYECTO.formatos_lab.hire_parquet`
-OPTIONS (format = 'PARQUET', uris = ['gs://TU_BUCKET/expA/parquet-snappy/hire-*.parquet']);
+OPTIONS (format = 'PARQUET', uris = ['gs://TU_BUCKET/expA/parquet-snappy/h-*.parquet']);
 
 CREATE OR REPLACE EXTERNAL TABLE `TU_PROYECTO.formatos_lab.hire_avro`
-OPTIONS (format = 'AVRO', uris = ['gs://TU_BUCKET/expA/avro/hire-*.avro']);
+OPTIONS (format = 'AVRO', uris = ['gs://TU_BUCKET/expA/avro/h-*.avro']);
 ```
 
-Ejecuta la **misma** consulta contra cada una y compara **“Bytes processed”** en
-*Job information*:
+Ejecuta una consulta que use **una sola columna** contra cada tabla:
 
 ```sql
-SELECT start_station_id, COUNT(*) AS viajes, AVG(duration) AS duracion_media
-FROM `TU_PROYECTO.formatos_lab.hire_parquet`     -- luego cambia a hire_avro
-WHERE start_station_id = 300
-GROUP BY start_station_id;
+SELECT AVG(duration) FROM `TU_PROYECTO.formatos_lab.hire_parquet`;   -- luego hire_avro
 ```
 
-**Resultado:** la consulta sobre Parquet lee muchos menos bytes (solo 2 columnas de los
-*row groups* relevantes); sobre Avro lee prácticamente todos los datos.
+Para tablas externas, el validador muestra *“lower bound of 0 bytes”* (no puede estimar
+antes de ejecutar). Lee el valor real en **Job information → Bytes processed** o con:
+
+```sql
+SELECT referenced_tables[SAFE_OFFSET(0)].table_id AS tabla,
+       ROUND(total_bytes_processed / 1048576, 1)  AS mb
+FROM `region-us`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 10 MINUTE)
+  AND statement_type = 'SELECT' AND state = 'DONE'
+ORDER BY creation_time DESC LIMIT 5;
+```
+
+**Resultado real:** `AVG(duration)` procesa **~78 MB sobre Parquet** y **~356 MB sobre
+Avro** (~4,5×). Parquet lee solo la columna `duration`; Avro lee las 9 columnas de cada
+fila. *Esta* es la ventaja de Parquet, no el tamaño en disco.
 
 ### A4. Resumen — fila vs columna
 
@@ -199,8 +260,8 @@ GROUP BY start_station_id;
 |---|---|---|---|
 | Orientación | fila, texto | fila, binario | **columna**, binario |
 | Esquema | externo | **embebido**, evoluciona | embebido |
-| Compresión típica | baja | media | **alta** |
-| Poda de columnas | ❌ | ❌ | ✅ |
+| Compresión | depende 100 % del códec | media | alta con buen códec |
+| Poda de columnas al leer | ❌ | ❌ | ✅ (**~4,5× menos bytes** en A3) |
 | Pushdown por estadísticas | ❌ | ❌ | ✅ (row groups + min/max) |
 | *Splittable* | ❌ (gzip) | ✅ | ✅ |
 | Ideal para | intercambio simple | **ingesta / streaming / evolución de esquema / escritura registro a registro** | **analítica / lectura / escaneos selectivos** |
@@ -223,11 +284,11 @@ que registra, versión a versión, qué archivos Parquet forman la tabla.
 
 | | Delta Lake | Apache Iceberg | Apache Hudi |
 |---|---|---|---|
-| Metadatos | `_delta_log/` (JSON + checkpoints Parquet) | árbol: *metadata.json → manifest list → manifests* | *timeline* en `.hoodie/` + índice de registros |
+| Metadatos | `_delta_log/` (JSON por línea + checkpoints Parquet) | árbol: *metadata.json → manifest list → manifests* | *timeline* en `.hoodie/` + índice de registros |
 | Origen | Databricks | Netflix | Uber |
 | Punto fuerte | lakehouse sobre Spark, `MERGE` batch, *time travel* | neutralidad entre motores, escala, **evolución de partición**, *hidden partitioning* | **upserts/deletes muy frecuentes**, ingesta near-real-time, consultas **incrementales / CDC** |
 | Motores | Spark (nativo); lectura amplia | Spark, Flink, Trino, BigQuery, Snowflake… | Spark, Flink; lectura amplia |
-| **En GCP** | **lectura** desde BigQuery (tabla externa BigLake `format='DELTA_LAKE'`, reader v3 con *deletion vectors* y *column mapping*; sin CDC). Escritura: Spark/Dataproc o `delta-rs` | **escritura nativa gestionada en BigQuery** (`table_format='ICEBERG'`): DML completo, transacciones ACID, time travel. También tablas externas + catálogo BigLake | **lectura** desde BigQuery como tabla externa vía **archivo manifest** (`file_set_spec_type='NEW_LINE_DELIMITED_MANIFEST'`), COW y MOR *read-optimized* con partición hive-style. Escritura: Spark/Flink en Dataproc |
+| **En GCP** | **lectura** desde BigQuery (tabla externa BigLake `format='DELTA_LAKE'`, reader v3 con *deletion vectors* y *column mapping*; sin CDC). Escritura: Spark/Dataproc o `delta-rs` | **escritura nativa gestionada en BigQuery** (`table_format='ICEBERG'`): DML completo, transacciones ACID, time travel. Metadatos Iceberg estándar vía `EXPORT TABLE METADATA` o BigLake metastore | **lectura** desde BigQuery como tabla externa vía **archivo manifest** (`file_set_spec_type='NEW_LINE_DELIMITED_MANIFEST'`), COW y MOR *read-optimized* con partición hive-style. Escritura: Spark/Flink en Dataproc |
 
 Los tres almacenan los **datos** como Parquet: se diferencian en **cómo gestionan los
 metadatos y las mutaciones**.
@@ -244,19 +305,22 @@ viven en **tu bucket de GCS**, pero usas SQL de BigQuery como con cualquier tabl
 ```bash
 bq mk --connection --location="$LOCATION" --connection_type=CLOUD_RESOURCE lab03_conn
 
-# Service account que BigQuery usa para tocar el bucket
-SA=$(bq show --format=prettyjson --connection --location="$LOCATION" \
-      "${PROJECT_ID}.lab03_conn" | jq -r .cloudResource.serviceAccountId)
+# El service account se lee con el id de 3 partes y SIN la bandera --location
+# (pasar --location con un id de 2 partes dispara un bug del CLI).
+SA=$(bq show --format=prettyjson --connection "${PROJECT_ID}.us.lab03_conn" \
+      | jq -r .cloudResource.serviceAccountId)
 echo "SA de la conexión: $SA"
 
 gcloud storage buckets add-iam-policy-binding "$BUCKET" \
   --member="serviceAccount:${SA}" --role="roles/storage.objectUser"
 gcloud storage buckets add-iam-policy-binding "$BUCKET" \
   --member="serviceAccount:${SA}" --role="roles/storage.legacyBucketReader"
+
+sleep 20   # dar tiempo a que propaguen los permisos IAM
 ```
 
-> En SQL, la conexión se referencia como `` `TU_PROYECTO.REGION.lab03_conn` `` donde
-> `REGION` es `$LOCATION` en minúsculas → aquí **`us`**.
+> La conexión se crea con `--location=US` pero se referencia en SQL como
+> `` `TU_PROYECTO.us.lab03_conn` `` (token de región en minúsculas).
 
 ### C2. Crear la tabla Iceberg
 
@@ -275,6 +339,9 @@ OPTIONS (
 );
 ```
 
+Si falla con *“…make sure gs://… is accessible via appropriate IAM roles”*, espera unos
+segundos más (propagación de IAM) y reintenta.
+
 ### C3. DML: `INSERT` / `UPDATE` / `DELETE` / `MERGE`
 
 ```sql
@@ -282,6 +349,9 @@ INSERT INTO `TU_PROYECTO.formatos_lab.estaciones_ice` VALUES
   (1, 'Hyde Park',   15, CURRENT_TIMESTAMP()),
   (2, 'Waterloo',     3, CURRENT_TIMESTAMP()),
   (3, 'Kings Cross', 22, CURRENT_TIMESTAMP());
+
+-- Ejecuta esto justo aquí y anota el valor (es el instante "3 filas"):
+SELECT CURRENT_TIMESTAMP() AS t_tres_filas;
 
 UPDATE `TU_PROYECTO.formatos_lab.estaciones_ice`
 SET bicis_disponibles = 0, actualizado = CURRENT_TIMESTAMP()
@@ -303,44 +373,62 @@ WHEN NOT MATCHED THEN
 SELECT * FROM `TU_PROYECTO.formatos_lab.estaciones_ice` ORDER BY station_id;
 ```
 
-Cada sentencia crea un **snapshot** nuevo de la tabla.
+Estado final: `1 → 9`, `2 → 0`, `4 → Nueva/12` (la fila 3 fue borrada). Cada sentencia
+creó un **snapshot**.
 
 ### C4. Time travel
 
-Antes de empezar C3, anota la hora. Luego, tras el `INSERT` pero antes del `DELETE`,
-ejecuta un `SELECT CURRENT_TIMESTAMP()` y guarda ese valor: es el instante “con 3 filas”.
+**Opción simple** (relativa) — funciona si han pasado >2 min desde `CREATE TABLE`:
 
 ```sql
--- Reemplaza el literal por el timestamp que anotaste entre el INSERT y el DELETE.
--- Debe estar dentro de la ventana de time travel (7 días) y después de crear la tabla.
-SELECT *
-FROM `TU_PROYECTO.formatos_lab.estaciones_ice`
-  FOR SYSTEM_TIME AS OF TIMESTAMP '2026-09-03 15:00:00+00'
+SELECT * FROM `TU_PROYECTO.formatos_lab.estaciones_ice`
+  FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 MINUTE)
 ORDER BY station_id;
 ```
 
-Deberías ver las 3 filas originales (con `station_id = 3` aún presente y `station_id = 2`
-todavía en 3 bicis), demostrando que cada DML dejó un snapshot consultable.
+**Opción precisa** — pega el valor `t_tres_filas` que anotaste en C3 (la consola lo
+muestra en **UTC**); debe ser posterior a `CREATE TABLE` y estar dentro de la ventana de
+time travel (7 días):
 
-### C5. Ver los metadatos Iceberg en GCS
+```sql
+SELECT * FROM `TU_PROYECTO.formatos_lab.estaciones_ice`
+  FOR SYSTEM_TIME AS OF TIMESTAMP '2026-09-03 22:05:35+00'   -- ← reemplaza
+ORDER BY station_id;
+```
+
+Con el instante entre el `INSERT` y el `UPDATE` verás las **3 filas originales**
+(`1→15, 2→3, 3→22`): prueba de que cada DML dejó un snapshot consultable.
+
+### C5. Materializar e inspeccionar los metadatos Iceberg
+
+Tras el DML, el bucket solo tiene los **datos** y un `metadata/v0.metadata.json` inicial
+(con `current-snapshot-id: -1`). BigQuery gestiona sus metadatos internamente; para
+generar el **árbol Iceberg estándar** (que otros motores pueden leer) se ejecuta:
+
+```sql
+EXPORT TABLE METADATA FROM `TU_PROYECTO.formatos_lab.estaciones_ice`;
+```
 
 ```bash
 gcloud storage ls -r "$BUCKET/iceberg/estaciones/**"
 ```
 
-Estructura típica (los nombres exactos pueden variar):
+Ahora aparece:
 
 ```
 iceberg/estaciones/
-├── data/                 *.parquet   ← los datos
+├── data/
+│   └── *.parquet                              ← los datos (un archivo por operación DML)
 └── metadata/
-    ├── v1.metadata.json  ...         ← estado de la tabla: esquema + lista de snapshots
-    ├── snap-*.avro                   ← "manifest list": los manifests de un snapshot
-    └── *.avro                        ← "manifests": qué archivos de data pertenecen al snapshot
+    ├── v0.metadata.json                       ← inicial (snapshot -1)
+    ├── v<timestamp>.metadata.json             ← estado actual: esquema + snapshots
+    ├── <uuid>-f-manifest-list-00000-of-00001.avro   ← "manifest list" del snapshot
+    ├── <uuid>-f-00000-of-00001.avro           ← "manifest": qué data files hay en el snapshot
+    └── version-hint.text                      ← apunta a la versión de metadata vigente
 ```
 
 ```bash
-gcloud storage cat "$BUCKET"/iceberg/estaciones/metadata/v*.metadata.json \
+gcloud storage cat "$BUCKET"/iceberg/estaciones/metadata/v1*.metadata.json \
   | python3 -m json.tool | head -n 60
 ```
 
@@ -349,25 +437,29 @@ Modelo mental: **metadata.json → snapshot → manifest list → manifests → 
 
 ### C6. (Opcional) leer la misma tabla desde otro motor
 
-El `storage_uri` contiene metadatos Iceberg **estándar**: un Spark/Trino/Flink con
-soporte Iceberg (p. ej. en Dataproc), apuntando al catálogo BigLake REST o al mismo
-prefijo de GCS, lee los **mismos snapshots**. Es la prueba de que el formato es abierto y
-no queda atado a BigQuery.
+Ese árbol de `metadata/` es **Iceberg estándar**: un Spark/Trino/Flink con soporte
+Iceberg (p. ej. en Dataproc), apuntando al `version-hint.text` / `metadata.json` del
+bucket o al **catálogo BigLake metastore (REST)**, lee los mismos snapshots. Repite
+`EXPORT TABLE METADATA` tras nuevos DML para refrescar. Es la prueba de que el formato es
+abierto y no queda atado a BigQuery.
 
 ---
 
-## Parte D — Delta Lake y Hudi en GCP (lectura e inspección)
+## Parte D — Delta Lake y Hudi
 
 ### D1. Delta Lake sin Spark (`delta-rs`) + lectura desde BigQuery
 
+`deltalake` (delta-rs) escribe tablas Delta **sin Spark ni JVM**:
+
 ```bash
-pip install --quiet "deltalake>=0.17" pandas pyarrow
+pip install --quiet "deltalake>=0.20" pandas pyarrow
 
 python3 - <<'PY'
-import pandas as pd
+import pandas as pd, os, shutil
 from deltalake import write_deltalake, DeltaTable
 
-path = "/tmp/delta_estaciones"
+path = "/tmp/delta_estaciones"; shutil.rmtree(path, ignore_errors=True)
+
 write_deltalake(path,
     pd.DataFrame({"station_id":[1,2,3],
                   "nombre":["Hyde Park","Waterloo","Kings Cross"],
@@ -380,17 +472,20 @@ write_deltalake(path,
 
 dt = DeltaTable(path)
 dt.delete("station_id = 3")                            # commit 2
+dt = DeltaTable(path)
 print("versión actual:", dt.version())
-print(dt.to_pandas().sort_values("station_id"))
+print(dt.to_pandas().sort_values("station_id").to_string(index=False))
+print("--- _delta_log ---")
+for f in sorted(os.listdir(path + "/_delta_log")): print(" ", f)
 PY
 
-ls -1 /tmp/delta_estaciones/_delta_log/
-cat /tmp/delta_estaciones/_delta_log/00000000000000000002.json   # acciones add / remove de archivos
+# El log es JSON por línea (una acción por línea): usar cat, NO un pretty-printer
+cat /tmp/delta_estaciones/_delta_log/00000000000000000002.json
 ```
 
-**Observa:** `_delta_log/N.json` es **un commit**. Cada línea es una acción (`add`,
-`remove`, `metaData`, `protocol`). “Leer la tabla” = reproducir el log hasta la última
-versión.
+Verás 3 commits (`00000000000000000000.json` … `..02.json`). El último contiene una
+acción `remove` (el archivo con la fila 3) y `add` (archivo reescrito sin ella): *leer la
+tabla* = reproducir el log hasta la última versión.
 
 Súbela a GCS y créala como tabla externa BigLake:
 
@@ -406,14 +501,16 @@ OPTIONS (format = 'DELTA_LAKE', uris = ['gs://TU_BUCKET/delta/estaciones']);
 SELECT * FROM `TU_PROYECTO.formatos_lab.estaciones_delta` ORDER BY station_id;
 ```
 
-BigQuery lee **la última versión** de la tabla Delta. Para *time travel* usas
-`delta-rs` (`DeltaTable(path, version=0)`) o Spark (`VERSION AS OF`).
+**Resultado real:** BigQuery devuelve las estaciones `1, 2, 4` (la 3, borrada, no
+aparece) → confirma que BigQuery lee la **última versión** reproduciendo el
+`_delta_log`. Para *time travel* usas `delta-rs` (`DeltaTable(path, version=0)`) o Spark
+(`VERSION AS OF`); la tabla externa de BigQuery siempre ve la versión más reciente.
 
-### D2. Apache Hudi: estructura e integración con BigQuery
+### D2. Apache Hudi (conceptual — no se ejecuta en este lab)
 
-Escribir una tabla Hudi necesita **Spark o Flink** (fuera del alcance de este lab; ver el
-*quickstart* de Hudi en Dataproc Serverless). Lo importante aquí es entender su forma y
-cómo se lee desde BigQuery.
+Escribir una tabla Hudi necesita **Spark o Flink**, así que aquí solo se describe su forma
+y cómo se leería desde BigQuery. Para practicarlo, usa el *quickstart* de Hudi en
+**Dataproc Serverless**.
 
 **Timeline (`.hoodie/`):** cada operación deja un *instant*: `<ts>.commit` (COW),
 `<ts>.deltacommit` (MOR), `<ts>.clean`, `<ts>.rollback`, más `hoodie.properties`. Los
@@ -429,7 +526,7 @@ ficheros `.log` con los cambios incrementales.
 
 **Leer desde BigQuery:** el `BigQuerySyncTool` de Hudi
 (`hoodie.gcp.bigquery.sync.use_bq_manifest_file = true`) genera un **archivo manifest**
-con la lista de archivos base vigentes y crea una tabla externa como esta:
+con la lista de archivos base vigentes y crea una tabla externa así:
 
 ```sql
 -- La produce BigQuerySyncTool; se muestra para entender qué genera
@@ -443,9 +540,8 @@ OPTIONS (
 );
 ```
 
-Así BigQuery escanea **solo** los archivos del manifest (no todo el directorio) y sigue
-la evolución de esquema desde los metadatos de commit. Soportado: **COW** y **MOR
-read-optimized** con partición *hive-style*.
+Así BigQuery escanea **solo** los archivos del manifest (no todo el directorio). Soportado:
+**COW** y **MOR read-optimized** con partición *hive-style*.
 
 ---
 
@@ -468,6 +564,7 @@ read-optimized** con partición *hive-style*.
 Resumen:
 
 - **Parquet** — dataset analítico estático o *append-only*, intercambio entre sistemas.
+  Elige bien el **códec** (ZSTD/GZIP para archivo, SNAPPY para lecturas calientes).
 - **Avro** — pipelines de ingesta, colas de eventos (Pub/Sub, Kafka), evolución de
   esquema intensa. *(La salida de Datastream a GCS es Avro.)*
 - **Delta Lake** — lakehouse centrado en Spark/Databricks; ACID + `MERGE` + time travel
@@ -486,17 +583,17 @@ DROP SCHEMA IF EXISTS `TU_PROYECTO.formatos_lab` CASCADE;
 ```
 
 ```bash
-bq rm --force --connection --location="$LOCATION" "${PROJECT_ID}.lab03_conn"
+bq rm --force --connection "${PROJECT_ID}.us.lab03_conn"
 gcloud storage rm --recursive "$BUCKET"
 ```
 
 ### Retos
 
 1. **Evolución de esquema en Iceberg:** `ALTER TABLE ... ADD COLUMN nueva STRING`,
-   inserta filas, y consulta un snapshot anterior — ¿cómo se ve la columna nueva en los
-   datos viejos?
-2. **Iceberg vs Parquet plano:** exporta los mismos datos con `EXPORT DATA` a Parquet y
-   compara el tamaño en disco frente a la tabla Iceberg.
+   inserta filas, `EXPORT TABLE METADATA`, y consulta un snapshot anterior — ¿cómo se ve
+   la columna nueva en los datos viejos?
+2. **Códec vs contenedor:** repite A1 exportando Parquet con `SNAPPY`, `GZIP` y `ZSTD`;
+   ¿cuánto cambia el tamaño solo por el códec?
 3. **Time travel local en Delta:** `DeltaTable('/tmp/delta_estaciones', version=0).to_pandas()`.
    ¿Por qué la tabla externa de BigQuery solo ve la última versión?
 4. **Interoperabilidad:** con Apache XTable, expón una misma tabla como Iceberg y Delta a
@@ -507,10 +604,9 @@ gcloud storage rm --recursive "$BUCKET"
 ## Referencias
 
 - [BigQuery — Apache Iceberg managed tables](https://docs.cloud.google.com/bigquery/docs/biglake-iceberg-tables-in-bigquery)
-- [BigQuery — Query Apache Iceberg external tables](https://docs.cloud.google.com/bigquery/docs/query-iceberg-data)
+- [BigQuery — Export table metadata (Iceberg)](https://docs.cloud.google.com/bigquery/docs/biglake-iceberg-tables-in-bigquery#export-metadata)
 - [BigQuery — Create BigLake external tables for Delta Lake](https://docs.cloud.google.com/bigquery/docs/create-delta-lake-table)
-- [BigQuery — Query open table formats with manifests (Hudi/Iceberg)](https://docs.cloud.google.com/bigquery/docs/query-open-table-format-using-manifest-files)
+- [BigQuery — Query open table formats with manifests (Hudi)](https://docs.cloud.google.com/bigquery/docs/query-open-table-format-using-manifest-files)
 - [Apache Hudi — Google BigQuery integration](https://hudi.apache.org/docs/gcp_bigquery/)
 - [BigQuery — EXPORT DATA statement](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/export-statements)
-- [Google Cloud Blog — Announcing BigQuery tables for Apache Iceberg](https://cloud.google.com/blog/products/data-analytics/announcing-bigquery-tables-for-apache-iceberg)
 - [delta-rs (`deltalake` para Python)](https://delta-io.github.io/delta-rs/)
