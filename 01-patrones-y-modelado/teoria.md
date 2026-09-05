@@ -3,6 +3,8 @@
 > **Audiencia Objetivo:** Data Architects, Analytics Engineers, Lead Data Engineers, Data Product Owners y Chief Data Officers (CDOs).
 >
 > **Alcance:** Del diseño de ingesta heterogénea (CDC, ETL, ELT, Virtualización) a la modelación dimensional avanzada (Inmon vs. Kimball, Data Marts lógicos, SCD2 con `MERGE`) y la Capa Semántica Empresarial.
+>
+> 🛠️ **Laboratorio Práctico Asociado:** [Lab 01 — Modelado Dimensional (Kimball) + Medallion](lab.md)
 
 ## Tabla de Contenidos
 

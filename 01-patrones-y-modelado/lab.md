@@ -1,3 +1,9 @@
+# Lab 01 — Modelado Dimensional (Kimball) y Arquitectura Medallion con Dataform
+
+> 📖 **Marco Teórico:** Consulta la [Guía de Arquitectura y Patrones](teoria.md) para profundizar en los conceptos de CDC, Inmon vs. Kimball, Medallion y SCD2.
+
+---
+
 ## Guía de Implementación del Laboratorio Práctico
 
 #### Paso 1: Configurar las Fuentes Transaccionales

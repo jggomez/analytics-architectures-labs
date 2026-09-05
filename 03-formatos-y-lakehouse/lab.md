@@ -1,5 +1,7 @@
 # Lab 03 — Formatos de archivo y formatos de tabla abiertos
 
+> 📖 **Marco Teórico:** Consulta la [Guía de Formatos de Archivo y Tablas Abiertas](teoria.md) para profundizar en Avro, Parquet, Iceberg, Delta Lake y Hudi.
+
 ## Codelab paso a paso
 
 Laboratorio corto para **ver por dentro** los formatos de datos que se usan en un lakehouse

@@ -3,6 +3,8 @@
 > **Audiencia:** Principal Data Architects, Analytics Engineers, Tech Leads, Cloud Infrastructure Engineers y CDOs.
 >
 > **Alcance:** De la serialización binaria en disco (Avro, Parquet, ORC) a la gobernanza transaccional ACID y metadatos desacoplados (Delta Lake, Apache Iceberg, Apache Hudi).
+>
+> 🛠️ **Laboratorio Práctico Asociado:** [Lab 03 — Formatos de Archivo y Formatos de Tabla Abiertos](lab.md)
 
 ## Tabla de Contenidos
 
