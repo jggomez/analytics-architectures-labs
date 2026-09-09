@@ -55,6 +55,14 @@ Incluye paso de limpieza al final.
 
 ---
 
+## Usa el Cloud Shell en Google Cloud Platform
+
+Puedes usar el Cloud Shell en Google Cloud Platform para que no tengas que instalar nada local
+
+<img width="1882" height="691" alt="Screenshot 2026-09-08 at 10 46 27 p m" src="https://github.com/user-attachments/assets/ac2a246e-2569-496d-a94f-4db52eb9f679" />
+
+---
+
 ### Paso 0 — Preparar el entorno
 
 ```bash
@@ -87,8 +95,8 @@ Parte E  Decisión + limpieza + retos
 ## Parte A — Parquet vs Avro
 
 Fuente: `bigquery-public-data.london_bicycles.cycle_hire` — **83,4 M filas, ~10 GB**.
-Para que los `EXPORT DATA` sean rápidos y baratos trabajamos con la **rebanada de 2016**
-(~13 M filas) y con un juego de **9 columnas**, incluidas dos de texto repetitivo
+Para que los `EXPORT DATA` sean rápidos y baratos trabajamos con la **data de 2016**
+(~13 M filas) y con un conjunto de **9 columnas**, incluidas dos de texto repetitivo
 (`start_station_name`, `end_station_name`) que es donde el formato columnar más se nota.
 
 ### A1. Exportar la misma consulta a varios formatos y compresiones
@@ -155,7 +163,9 @@ FROM `bigquery-public-data.london_bicycles.cycle_hire`
 WHERE start_date >= '2016-01-01' AND start_date < '2017-01-01';
 ```
 
-Compara el tamaño total en disco de cada carpeta:
+Compara el tamaño total en disco de cada carpeta, ejecuta lo sgte en el Cloud Shell:
+
+<img width="1430" height="225" alt="Screenshot 2026-09-08 at 11 01 03 p m" src="https://github.com/user-attachments/assets/3c6bae6b-730a-453d-9733-a99bad6fbea6" />
 
 ```bash
 for f in csv-raw csv-gzip avro parquet-snappy parquet-zstd; do
@@ -163,7 +173,7 @@ for f in csv-raw csv-gzip avro parquet-snappy parquet-zstd; do
 done
 ```
 
-**Resultado real (rebanada 2016, 9 columnas):**
+**Resultado real (data del 2016, 9 columnas):**
 
 | Formato | Tamaño aprox. |
 |---|---:|
@@ -186,7 +196,7 @@ done
 ### A2. Mirar los archivos por dentro
 
 `EXPORT DATA` reparte la salida en muchos *shards* y **algunos salen vacíos** (0 filas).
-Elige uno con datos (p. ej. el `-000000000001`, o el más grande):
+Elige uno con datos (p. ej. el `-000000000001`, o el más grande), ejecuta lo siguiente en el Cloud Shell:
 
 ```bash
 pip install --quiet parquet-tools fastavro
@@ -198,6 +208,9 @@ gcloud storage cp "$BIG" /tmp/s.parquet
 parquet-tools inspect /tmp/s.parquet     # esquema, num_row_groups, codec, min/max por columna
 parquet-tools show --head 5 /tmp/s.parquet
 ```
+
+<img width="1349" height="897" alt="Screenshot 2026-09-08 at 11 08 02 p m" src="https://github.com/user-attachments/assets/d10a2c15-81ef-416e-aef5-4917ad72849b" />
+
 
 Verás algo como: `num_rows: ~98000`, `num_row_groups: 1`, y por columna el códec y las
 estadísticas, p. ej. `duration min=-3180 max=532920` (¡duraciones negativas! dato sucio
@@ -227,10 +240,10 @@ PY
 ### A3. Leer cada formato desde BigQuery — la lectura selectiva
 
 ```sql
-CREATE OR REPLACE EXTERNAL TABLE `TU_PROYECTO.formatos_lab.hire_parquet`
+CREATE OR REPLACE EXTERNAL TABLE `TU_PROYECTO_ID.formatos_lab.hire_parquet`
 OPTIONS (format = 'PARQUET', uris = ['gs://TU_BUCKET/expA/parquet-snappy/h-*.parquet']);
 
-CREATE OR REPLACE EXTERNAL TABLE `TU_PROYECTO.formatos_lab.hire_avro`
+CREATE OR REPLACE EXTERNAL TABLE `TU_PROYECTO_ID.formatos_lab.hire_avro`
 OPTIONS (format = 'AVRO', uris = ['gs://TU_BUCKET/expA/avro/h-*.avro']);
 ```
 
@@ -304,6 +317,8 @@ viven en **tu bucket de GCS**, pero usas SQL de BigQuery como con cualquier tabl
 
 ### C1. Conexión y permisos
 
+En el Cloud Shell:
+
 ```bash
 bq mk --connection --location="$LOCATION" --connection_type=CLOUD_RESOURCE lab03_conn
 
@@ -313,12 +328,15 @@ SA=$(bq show --format=prettyjson --connection "${PROJECT_ID}.us.lab03_conn" \
       | jq -r .cloudResource.serviceAccountId)
 echo "SA de la conexión: $SA"
 
+sleep 30
+
 gcloud storage buckets add-iam-policy-binding "$BUCKET" \
   --member="serviceAccount:${SA}" --role="roles/storage.objectUser"
 gcloud storage buckets add-iam-policy-binding "$BUCKET" \
   --member="serviceAccount:${SA}" --role="roles/storage.legacyBucketReader"
 
-sleep 20   # dar tiempo a que propaguen los permisos IAM
+sleep 30
+
 ```
 
 > La conexión se crea con `--location=US` pero se referencia en SQL como
@@ -326,14 +344,16 @@ sleep 20   # dar tiempo a que propaguen los permisos IAM
 
 ### C2. Crear la tabla Iceberg
 
+Ahora en el SQL Editor de BigQuery
+
 ```sql
-CREATE OR REPLACE TABLE `TU_PROYECTO.formatos_lab.estaciones_ice` (
+CREATE OR REPLACE TABLE `TU_PROYECTO_ID.formatos_lab.estaciones_ice` (
   station_id        INT64,
   nombre            STRING,
   bicis_disponibles INT64,
   actualizado       TIMESTAMP
 )
-WITH CONNECTION `TU_PROYECTO.us.lab03_conn`
+WITH CONNECTION `TU_PROYECTO_ID.us.lab03_conn`
 OPTIONS (
   file_format  = 'PARQUET',
   table_format = 'ICEBERG',
@@ -347,7 +367,7 @@ segundos más (propagación de IAM) y reintenta.
 ### C3. DML: `INSERT` / `UPDATE` / `DELETE` / `MERGE`
 
 ```sql
-INSERT INTO `TU_PROYECTO.formatos_lab.estaciones_ice` VALUES
+INSERT INTO `TU_PROYECTO_ID.formatos_lab.estaciones_ice` VALUES
   (1, 'Hyde Park',   15, CURRENT_TIMESTAMP()),
   (2, 'Waterloo',     3, CURRENT_TIMESTAMP()),
   (3, 'Kings Cross', 22, CURRENT_TIMESTAMP());
@@ -355,14 +375,14 @@ INSERT INTO `TU_PROYECTO.formatos_lab.estaciones_ice` VALUES
 -- Ejecuta esto justo aquí y anota el valor (es el instante "3 filas"):
 SELECT CURRENT_TIMESTAMP() AS t_tres_filas;
 
-UPDATE `TU_PROYECTO.formatos_lab.estaciones_ice`
+UPDATE `TU_PROYECTO_ID.formatos_lab.estaciones_ice`
 SET bicis_disponibles = 0, actualizado = CURRENT_TIMESTAMP()
 WHERE station_id = 2;
 
-DELETE FROM `TU_PROYECTO.formatos_lab.estaciones_ice`
+DELETE FROM `TU_PROYECTO_ID.formatos_lab.estaciones_ice`
 WHERE station_id = 3;
 
-MERGE `TU_PROYECTO.formatos_lab.estaciones_ice` T
+MERGE `TU_PROYECTO_ID.formatos_lab.estaciones_ice` T
 USING UNNEST([STRUCT(1 AS station_id, 9 AS bicis),
               STRUCT(4 AS station_id, 12 AS bicis)]) S
 ON T.station_id = S.station_id
@@ -372,7 +392,7 @@ WHEN NOT MATCHED THEN
   INSERT (station_id, nombre, bicis_disponibles, actualizado)
   VALUES (S.station_id, 'Nueva', S.bicis, CURRENT_TIMESTAMP());
 
-SELECT * FROM `TU_PROYECTO.formatos_lab.estaciones_ice` ORDER BY station_id;
+SELECT * FROM `TU_PROYECTO_ID.formatos_lab.estaciones_ice` ORDER BY station_id;
 ```
 
 Estado final: `1 → 9`, `2 → 0`, `4 → Nueva/12` (la fila 3 fue borrada). Cada sentencia
@@ -383,7 +403,7 @@ creó un **snapshot**.
 **Opción simple** (relativa) — funciona si han pasado >2 min desde `CREATE TABLE`:
 
 ```sql
-SELECT * FROM `TU_PROYECTO.formatos_lab.estaciones_ice`
+SELECT * FROM `TU_PROYECTO_ID.formatos_lab.estaciones_ice`
   FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 MINUTE)
 ORDER BY station_id;
 ```
@@ -393,7 +413,7 @@ muestra en **UTC**); debe ser posterior a `CREATE TABLE` y estar dentro de la ve
 time travel (7 días):
 
 ```sql
-SELECT * FROM `TU_PROYECTO.formatos_lab.estaciones_ice`
+SELECT * FROM `TU_PROYECTO_ID.formatos_lab.estaciones_ice`
   FOR SYSTEM_TIME AS OF TIMESTAMP '2026-09-03 22:05:35+00'   -- ← reemplaza
 ORDER BY station_id;
 ```
@@ -407,8 +427,10 @@ Tras el DML, el bucket solo tiene los **datos** y un `metadata/v0.metadata.json`
 (con `current-snapshot-id: -1`). BigQuery gestiona sus metadatos internamente; para
 generar el **árbol Iceberg estándar** (que otros motores pueden leer) se ejecuta:
 
+Ejecuta lo sgte en el sql edito en BigQuery
+
 ```sql
-EXPORT TABLE METADATA FROM `TU_PROYECTO.formatos_lab.estaciones_ice`;
+EXPORT TABLE METADATA FROM `TU_PROYECTO_ID.formatos_lab.estaciones_ice`;
 ```
 
 ```bash
@@ -508,7 +530,7 @@ aparece) → confirma que BigQuery lee la **última versión** reproduciendo el
 `_delta_log`. Para *time travel* usas `delta-rs` (`DeltaTable(path, version=0)`) o Spark
 (`VERSION AS OF`); la tabla externa de BigQuery siempre ve la versión más reciente.
 
-### D2. Apache Hudi (conceptual — no se ejecuta en este lab)
+### D2. Apache Hudi (conceptual — no se ejecuta en este lab) (OPTIONAL)
 
 Escribir una tabla Hudi necesita **Spark o Flink**, así que aquí solo se describe su forma
 y cómo se leería desde BigQuery. Para practicarlo, usa el *quickstart* de Hudi en
@@ -598,8 +620,6 @@ gcloud storage rm --recursive "$BUCKET"
    ¿cuánto cambia el tamaño solo por el códec?
 3. **Time travel local en Delta:** `DeltaTable('/tmp/delta_estaciones', version=0).to_pandas()`.
    ¿Por qué la tabla externa de BigQuery solo ve la última versión?
-4. **Interoperabilidad:** con Apache XTable, expón una misma tabla como Iceberg y Delta a
-   la vez y léela desde dos motores.
 
 ---
 
