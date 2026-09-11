@@ -1,5 +1,7 @@
 # Lab 02 — BigQuery: Particionamiento, Clustering y Optimización de SQL
 
+> 📖 **Marco Teórico:** Consulta la [Guía de Optimización y Rendimiento en BigQuery](teoria.md) para profundizar en Dremel, Capacitor, el Shuffle distribuido, el plan de ejecución y buenas prácticas FinOps.
+
 ## Codelab paso a paso
 
 En este laboratorio vas a **crear un dataset y varias tablas en BigQuery**, poblarlas con
