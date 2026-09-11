@@ -553,6 +553,9 @@ Una gran fortaleza de Neo4j es su capacidad de **exploración visual inmediata**
 
 Para garantizar una administración responsable de los recursos de la nube y mantener el entorno dentro de la política de **Costo Cero**:
 
+> [!WARNING]
+> **Comportamiento automático de AuraDB Free:** Las instancias de la capa gratuita se **pausan automáticamente tras 72 horas de inactividad** (sin conexiones ni consultas). Si una instancia permanece pausada durante **más de 90 días** sin ser reanudada, Neo4j **la elimina de forma permanente** junto con todos sus datos. Si planeas continuar el laboratorio en otra sesión, reanuda la instancia periódicamente desde la consola o exporta un respaldo de tus datos.
+
 ### Opción 1: Pausar la Instancia (Recomendado si quieres continuar explorando después)
 En la consola de Neo4j Aura ([https://console.neo4j.io/](https://console.neo4j.io/)):
 1. Ubica tu instancia `analytics-lab-graph`.
