@@ -91,6 +91,8 @@ Paso 6  (10 min)  Limpieza + Retos Opcionales
 
 ## Paso 0 — Aprovisionar el Entorno (15 min)
 
+Crea un nuevo proyecto en GCP y usa el Cloud Shell 
+
 ### 0.1. Variables de entorno y recursos base
 
 ```bash
