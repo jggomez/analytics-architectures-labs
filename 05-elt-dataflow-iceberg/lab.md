@@ -220,16 +220,25 @@ gcloud storage cp customers.csv products.csv "$BUCKET/landing/"
 ### 0.6. Entorno Python para Beam/Dataflow
 
 > [!NOTE]
-> Ejecuta esto en **Cloud Shell** (no necesitas nada instalado localmente). Todo este lab corre desde ahí: Cloud Shell ya trae `python3`, `pip`, `gcloud` y `bq` preinstalados, y tu `$HOME` persiste entre sesiones, así que este entorno virtual sigue disponible aunque cierres y reabras Cloud Shell.
+> Ejecuta esto en **Cloud Shell** (no necesitas nada instalado localmente). Cloud Shell ya trae `python3`, `pip`, `gcloud` y `bq` preinstalados.
 
-¿Para qué sirve este paso? Los tres jobs de Dataflow (`bronze_pipeline.py`, `silver_pipeline.py`, `gold_pipeline.py`) son **scripts de Apache Beam**: cuando los corres con `python3 ..._pipeline.py --runner=DataflowRunner ...` (Pasos 2, 3 y 4), el proceso que arranca en Cloud Shell **no es solo un cliente de línea de comandos** — usa el SDK de Beam instalado localmente para construir el grafo del pipeline, empaquetarlo (*staging*) y enviarlo a la API de Dataflow, que luego lo ejecuta en workers remotos. Por eso Cloud Shell necesita el paquete `apache-beam[gcp]` instalado:
+¿Para qué sirve este paso? Los tres jobs de Dataflow (`bronze_pipeline.py`, `silver_pipeline.py`, `gold_pipeline.py`) son **scripts de Apache Beam**: cuando los corres con `python3 ..._pipeline.py --runner=DataflowRunner ...` (Pasos 2, 3 y 4), el proceso que arranca en Cloud Shell **no es solo un cliente de línea de comandos** — usa el SDK de Beam instalado localmente para construir el grafo del pipeline, empaquetarlo (*staging*) y enviarlo a la API de Dataflow, que luego lo ejecuta en workers remotos. Por eso Cloud Shell necesita el paquete `apache-beam[gcp]` instalado.
 
-1. **`python3 -m venv lab05-venv`** crea un entorno virtual aislado, para no instalar paquetes sobre el Python del sistema de Cloud Shell (evita romper otras herramientas que ya usa Cloud Shell u otro lab de este repo).
-2. **`source lab05-venv/bin/activate`** activa ese entorno en la sesión actual de Cloud Shell — todo `pip install` y `python3` que ejecutes después usa este entorno hasta que cierres la terminal o corras `deactivate` (Paso 6).
-3. **`pip install "apache-beam[gcp]==2.76.0"`** instala el SDK de Beam con los extras de GCP (`DataflowRunner`, conectores `io.gcp.bigquery`, `io.avroio`, credenciales). Fijar la versión (`==2.76.0`) importa: Dataflow usa la **misma versión del SDK** que tienes instalada localmente para construir el contenedor de los workers remotos — una versión distinta entre tu Cloud Shell y el worker puede causar errores de compatibilidad difíciles de diagnosticar en medio del taller.
+> [!WARNING]
+> El `$HOME` de Cloud Shell tiene un disco persistente de **solo 5 GB, y no se puede ampliar**. `apache-beam[gcp]` arrastra un árbol de dependencias pesado (`grpcio`, `pyarrow`, `protobuf`, `numpy`...) que puede agotarlo fácilmente, sobre todo si ya tienes otros proyectos ocupando espacio ahí — y un `cat <<EOF > archivo.json` que se ejecuta con el disco lleno **escribe un archivo vacío o truncado sin avisar claramente**, lo que luego provoca errores confusos en pasos posteriores (por ejemplo, `gcloud datastream streams create` fallando con un críptico `None is not of type 'object'` porque el JSON que le pasaste quedó corrupto). Por eso este lab crea el entorno virtual en **`/tmp`** en vez de `$HOME`: `/tmp` vive en el disco efímero de la VM de Cloud Shell (mucho más grande) y no cuenta contra esa cuota de 5 GB. El costo es que `/tmp` no sobrevive un reinicio completo de la VM de Cloud Shell (si eso pasa, solo repites este paso — no pierdes nada del resto del lab, que sí vive en GCS/BigQuery).
+
+```bash
+df -h "$HOME"   # solo para que veas cuánto te queda del disco de 5GB
+
+python3 -m venv /tmp/lab05-venv
+source /tmp/lab05-venv/bin/activate
+pip install --quiet --no-cache-dir "apache-beam[gcp]==2.76.0"
+```
+
+> Si en algún momento del taller `$HOME` se queda sin espacio (por los CSV, los JSON de configuración, etc.), libera con `rm -rf ~/.cache/pip` — pero el venv pesado ya no vive ahí, así que no debería volver a pasar.
 
 > [!IMPORTANT]
-> Los Pasos 2.3, 3.3 y 4.2 (`python3 bronze_pipeline.py ...`, `python3 silver_pipeline.py ...`, `python3 gold_pipeline.py ...`) asumen que este entorno virtual sigue **activo en la misma sesión de Cloud Shell**. Si cierras la pestaña o te desconectas, vuelve a correr `source lab05-venv/bin/activate` antes de continuar (no hace falta reinstalar el paquete).
+> Los Pasos 2.3, 3.3 y 4.2 (`python3 bronze_pipeline.py ...`, `python3 silver_pipeline.py ...`, `python3 gold_pipeline.py ...`) asumen que este entorno virtual sigue **activo en la misma sesión de Cloud Shell**. Si cierras la pestaña o se desconecta pero es la misma VM, vuelve a correr `source /tmp/lab05-venv/bin/activate`. Si Cloud Shell te asignó una VM nueva (por ejemplo, tras mucho tiempo de inactividad), `/tmp/lab05-venv` ya no existe — repite este Paso 0.6 completo.
 
 ---
 
