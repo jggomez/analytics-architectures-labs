@@ -54,9 +54,9 @@ Al terminar este laboratorio serás capaz de:
 ### Prerrequisitos
 
 - Proyecto de Google Cloud con facturación habilitada.
-- Cloud Shell (trae `gcloud`, `bq`, `python3`, `pip`).
+- **Todo este lab se ejecuta en Google Cloud Shell** (icono `>_` en la consola de GCP) — no necesitas instalar nada localmente. Cloud Shell ya trae `gcloud`, `bq`, `python3` y `pip`, y persiste tu `$HOME` entre sesiones (útil si el taller se interrumpe y retomas más tarde).
 - Conocimientos básicos de SQL, Python y del patrón CDC/Medallion (Módulo 01).
-- En los bloques `bash` se usan las variables de entorno del Paso 0. En los bloques `sql` reemplaza `TU_PROYECTO_ID` y `TU_BUCKET` por tus valores reales.
+- Todos los bloques `bash` de este lab están escritos para pegarse directamente en Cloud Shell y reutilizan las variables de entorno definidas en el Paso 0 (deben seguir exportadas en la misma sesión). En los bloques `sql` reemplaza `TU_PROYECTO_ID` y `TU_BUCKET` por tus valores reales.
 
 ### Costo Estimado (FinOps)
 
@@ -219,11 +219,17 @@ gcloud storage cp customers.csv products.csv "$BUCKET/landing/"
 
 ### 0.6. Entorno Python para Beam/Dataflow
 
-```bash
-python3 -m venv lab05-venv
-source lab05-venv/bin/activate
-pip install --quiet "apache-beam[gcp]==2.76.0"
-```
+> [!NOTE]
+> Ejecuta esto en **Cloud Shell** (no necesitas nada instalado localmente). Todo este lab corre desde ahí: Cloud Shell ya trae `python3`, `pip`, `gcloud` y `bq` preinstalados, y tu `$HOME` persiste entre sesiones, así que este entorno virtual sigue disponible aunque cierres y reabras Cloud Shell.
+
+¿Para qué sirve este paso? Los tres jobs de Dataflow (`bronze_pipeline.py`, `silver_pipeline.py`, `gold_pipeline.py`) son **scripts de Apache Beam**: cuando los corres con `python3 ..._pipeline.py --runner=DataflowRunner ...` (Pasos 2, 3 y 4), el proceso que arranca en Cloud Shell **no es solo un cliente de línea de comandos** — usa el SDK de Beam instalado localmente para construir el grafo del pipeline, empaquetarlo (*staging*) y enviarlo a la API de Dataflow, que luego lo ejecuta en workers remotos. Por eso Cloud Shell necesita el paquete `apache-beam[gcp]` instalado:
+
+1. **`python3 -m venv lab05-venv`** crea un entorno virtual aislado, para no instalar paquetes sobre el Python del sistema de Cloud Shell (evita romper otras herramientas que ya usa Cloud Shell u otro lab de este repo).
+2. **`source lab05-venv/bin/activate`** activa ese entorno en la sesión actual de Cloud Shell — todo `pip install` y `python3` que ejecutes después usa este entorno hasta que cierres la terminal o corras `deactivate` (Paso 6).
+3. **`pip install "apache-beam[gcp]==2.76.0"`** instala el SDK de Beam con los extras de GCP (`DataflowRunner`, conectores `io.gcp.bigquery`, `io.avroio`, credenciales). Fijar la versión (`==2.76.0`) importa: Dataflow usa la **misma versión del SDK** que tienes instalada localmente para construir el contenedor de los workers remotos — una versión distinta entre tu Cloud Shell y el worker puede causar errores de compatibilidad difíciles de diagnosticar en medio del taller.
+
+> [!IMPORTANT]
+> Los Pasos 2.3, 3.3 y 4.2 (`python3 bronze_pipeline.py ...`, `python3 silver_pipeline.py ...`, `python3 gold_pipeline.py ...`) asumen que este entorno virtual sigue **activo en la misma sesión de Cloud Shell**. Si cierras la pestaña o te desconectas, vuelve a correr `source lab05-venv/bin/activate` antes de continuar (no hace falta reinstalar el paquete).
 
 ---
 
