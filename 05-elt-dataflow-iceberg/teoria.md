@@ -124,7 +124,7 @@ EVENTO DATASTREAM (AVRO) — CDC DE POSTGRESQL HACIA GCS
   "source_metadata": {                    ← específico de PostgreSQL
       "schema": "core",
       "table": "orders",
-      "change_type": "INSERT" | "UPDATE" | "DELETE" | "BACKFILL",
+      "change_type": "INSERT" | "UPDATE" | "DELETE",   ← para PostgreSQL, estos son los únicos 3 valores documentados
       "is_deleted": false,
       "primary_keys": ["order_id"],
       "lsn": "…",
@@ -143,6 +143,9 @@ EVENTO DATASTREAM (AVRO) — CDC DE POSTGRESQL HACIA GCS
 ```
 
 Nótese la diferencia con la tabla `_raw` que generaba el Módulo 01 en BigQuery: allí Datastream **aplanaba** `source_metadata` en columnas con prefijo `_metadata_*`. Aquí, al escribir a GCS, la estructura se mantiene **anidada**: el pipeline de Beam del Paso 2 del lab lee `evento["payload"]["order_id"]` y `evento["source_metadata"]["change_type"]` explícitamente.
+
+> [!NOTE]
+> La documentación oficial de Datastream **no especifica** qué valor toma `change_type` en los eventos del backfill inicial (solo documenta `INSERT`/`UPDATE`/`DELETE` para cambios de CDC real). Por eso `parse_order_event` en el lab usa `meta.get("change_type", "BACKFILL")`: si el campo viene ausente o nulo, **nuestro propio código** le pone la etiqueta `"BACKFILL"` — no es un valor que Datastream envíe. Para distinguir de forma confiable un evento de backfill de uno de CDC en vivo, el campo correcto a mirar es el top-level `read_method` (`postgresql-backfill` vs. `postgresql-cdc`), no `change_type`.
 
 ### 4.2. Por qué Bronze necesita deduplicación
 

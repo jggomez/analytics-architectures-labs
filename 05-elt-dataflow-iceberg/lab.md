@@ -268,7 +268,7 @@ gcloud datastream connection-profiles create gcs-dest-profile \
 ### 1.2. Configuración y creación del stream
 
 ```bash
-cat <<EOF > pg_source_config.json
+cat <<'EOF' > pg_source_config.json
 {
   "includeObjects": {
     "postgresqlSchemas": [
@@ -283,7 +283,7 @@ cat <<EOF > pg_source_config.json
 }
 EOF
 
-cat <<EOF > gcs_dest_config.json
+cat <<'EOF' > gcs_dest_config.json
 {
   "fileRotationMb": 5,
   "fileRotationInterval": "15s",
@@ -325,7 +325,9 @@ gcloud datastream streams describe orders-to-gcs-stream \
 gcloud storage ls -r "$BUCKET/bronze-cdc/orders/**"
 ```
 
-Deberías ver al menos un archivo `.avro`. Ahora, para demostrar CDC real (no solo el backfill), vuelve a `gcloud sql connect retailflow-pg --user=postgres --database=retailflow_db` y ejecuta:
+Deberías ver algo como `bronze-cdc/orders/core_orders/2026/09/19/15/33/<archivo>.avro`. Esa estructura de carpetas (`[esquema]_[tabla]/yyyy/mm/dd/hh/mm/`) es **automática y obligatoria** en Datastream cuando el destino es Cloud Storage — no la configuraste tú y no se puede desactivar. `core_orders` es el esquema `core` + la tabla `orders` (separados por `_`); el `yyyy/mm/dd/hh/mm` es la hora del **evento en el origen** (para el backfill, cuándo se leyó de Postgres; para CDC, cuándo cambió la fila) — no la hora en que Datastream escribió el archivo. Esto es importante para el Paso 2: el job Bronze **debe** leer con un patrón recursivo (`**/*.avro`), no `*.avro`, porque un solo `*` en Beam no cruza niveles de carpeta y nunca encontraría estos archivos.
+
+Ahora, para demostrar CDC real (no solo el backfill), vuelve a `gcloud sql connect retailflow-pg --user=postgres --database=retailflow_db` y ejecuta:
 
 ```sql
 -- Un pedido cambia de estado (UPDATE) y llega uno nuevo (INSERT)
@@ -376,6 +378,9 @@ OPTIONS (file_format = 'PARQUET', table_format = 'ICEBERG', storage_uri = 'gs://
 
 > [!NOTE]
 > Bronze guarda **todo como `STRING`** salvo los metadatos de CDC. Es la filosofía "raw": no se pierde información por una conversión de tipo fallida en el peor momento. El tipado ocurre recién en Silver (Paso 3) — igual que hacía el Módulo 01 al separar `core_usuarios` (raw) de `stg_usuarios` (tipada).
+
+> [!WARNING]
+> Este job **no es idempotente**: cada vez que lo corres, `ReadFromAvro`/`ReadFromText` vuelven a leer **todos** los archivos que existan en ese momento (Datastream nunca borra los `.avro` ya leídos), y como escribe con `WRITE_APPEND`, una segunda corrida duplica cada fila de la primera. Para el flujo normal del taller (correr Bronze una sola vez, después de que ya está todo el CDC/CSV en su lugar) esto no es un problema. Si necesitas **reintentar** este job (por ejemplo, después de un error a mitad de corrida), vuelve a ejecutar el `CREATE OR REPLACE TABLE` del Paso 2.1 para vaciar las tablas Bronze antes de correr `bronze_pipeline.py` de nuevo — así evitas duplicados en cascada hacia Silver y Gold.
 
 ### 2.2. El pipeline de Beam
 
@@ -473,7 +478,7 @@ EOF
 
 ```bash
 python3 bronze_pipeline.py \
-  --orders_avro="$BUCKET/bronze-cdc/orders/*.avro" \
+  --orders_avro="$BUCKET/bronze-cdc/orders/**/*.avro" \
   --customers_csv="$BUCKET/landing/customers.csv" \
   --products_csv="$BUCKET/landing/products.csv" \
   --bronze_orders_table="${PROJECT_ID}:bronze.orders" \
@@ -498,6 +503,18 @@ SELECT count(*) FROM `TU_PROYECTO_ID.bronze.products`;
 ```
 
 Deberías ver **7 eventos** en `bronze.orders` (5 del backfill inicial + el `UPDATE` de `ORD-0004` + el `INSERT` de `ORD-0006`), 5 clientes y 5 productos.
+
+### 2.5. En producción, esto no se haría así
+
+El job que acabas de correr **relee todos los archivos cada vez** y **no es idempotente** (Paso 2.2, nota de advertencia). Es una simplificación deliberada para caber en 2 horas — en un pipeline real de producción, este mismo patrón (Datastream → GCS → Dataflow batch) se resolvería con alguna de estas técnicas:
+
+1. **Mover o archivar lo ya procesado:** al terminar de leer un archivo, moverlo de `bronze-cdc/orders/...` a un prefijo como `bronze-cdc/orders-processed/...` (o borrarlo). El siguiente `glob` solo ve archivos nuevos.
+2. **Watermark / tabla de control:** guardar en algún lado (una tabla chica en BigQuery, un archivo de estado) el último `source_timestamp` procesado, y filtrar cada corrida con `WHERE source_timestamp > ultimo_watermark`. Es el equivalente a un modelo incremental de Dataform/dbt.
+3. **Convertir Bronze en streaming real (unbounded), no batch:** configurar una notificación de Cloud Storage vía Pub/Sub que se dispare cada vez que Datastream escribe un archivo nuevo, y correr Dataflow como pipeline *unbounded* consumiendo esa notificación — cada archivo se procesa exactamente una vez, apenas llega. Es la distinción *bounded vs. unbounded* de [teoría §2.1](teoria.md#21-conceptos-clave): el mismo código Beam puede adaptarse a este modo.
+4. **Escrituras idempotentes con `MERGE` en vez de `WRITE_APPEND` ciego:** escribir por clave natural (`order_id`) con un `MERGE` (DML, sí soportado en tablas Iceberg gestionadas — a diferencia del `LOAD JOB` de `WriteToBigQuery`, que solo permite `WRITE_APPEND`). Si el mismo evento se reprocesa por error, el `MERGE` solo actualiza la fila; no la duplica.
+5. **Orquestación con estado:** un DAG de Cloud Composer/Airflow que sabe qué rango de tiempo ya procesó, en vez de que una persona corra el script a mano.
+
+Cualquiera de estas cinco cosas es tema de un módulo de "pipelines de producción", no de este taller introductorio — pero vale la pena saber que existen antes de llevar este patrón a un entorno real.
 
 ---
 
@@ -547,6 +564,8 @@ def keyed_by_order_id(row):
 
 
 def ultimo_evento_por_orden(kv):
+    # kv = (order_id, [lista de eventos de ESA orden]); el agrupado ya fue por order_id.
+    # Aqui elegimos, DENTRO del grupo, cual evento es el vigente: el de source_timestamp mas alto.
     _, eventos = kv
     return max(eventos, key=lambda e: e["source_timestamp"])
 
@@ -833,6 +852,13 @@ Esto cierra visualmente el recorrido Bronze → Silver → Gold → BI.
 # 1. Pausar y eliminar el stream de Datastream
 gcloud datastream streams update orders-to-gcs-stream \
     --location="$REGION" --state=PAUSED --update-mask=state
+
+# Pausar NO es instantáneo: el stream pasa por RUNNING -> DRAINING -> PAUSED.
+# Si intentas 'delete' mientras sigue en DRAINING, falla. Espera a que llegue a PAUSED:
+until [[ "$(gcloud datastream streams describe orders-to-gcs-stream --location="$REGION" --format='value(state)')" == "PAUSED" ]]; do
+  echo "Esperando a que el stream termine de pausarse (drenando datos en tránsito)..."
+  sleep 10
+done
 
 gcloud datastream streams delete orders-to-gcs-stream --location="$REGION" --quiet
 
