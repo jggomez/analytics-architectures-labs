@@ -15,6 +15,7 @@ Cada módulo combina **fundamentos arquitectónicos de nivel enterprise** (guía
 | **[03. Formatos y Lakehouse](03-formatos-y-lakehouse/)** | 📖 [Teoría](03-formatos-y-lakehouse/teoria.md)<br>🛠️ [Laboratorio](03-formatos-y-lakehouse/lab.md) | Serialización binaria en disco y formatos de tabla abiertos (Open Table Formats) | BigQuery, Cloud Storage, BigLake, Apache Iceberg, Delta Lake, Apache Hudi | **Teoría:** Avro (fila) vs. Parquet/ORC (columnar); logs transaccionales ACID y metadata trees en Iceberg, Delta y Hudi.<br>**Lab:** Exportación e inspección binaria CSV vs. Avro vs. Parquet, creación y mutación DML de tablas Iceberg gestionadas en BigQuery, y lectura de Delta con `delta-rs`. |
 | **[04. NoSQL y Grafos con Neo4j](04-nosql-grafos-neo4j/)** | 📖 [Teoría](04-nosql-grafos-neo4j/teoria.md)<br>🛠️ [Laboratorio](04-nosql-grafos-neo4j/lab.md) | Panorama NoSQL, modelo Labeled Property Graph (LPG), Index-Free Adjacency y Cypher | Neo4j AuraDB (Free Tier), Neo4j Workspace / Browser, Cypher Query Language | **Teoría:** Familias NoSQL, CAP/PACELC, modelo LPG vs RDF, Index-Free Adjacency vs JOIN explosion, GraphRAG y matriz de decisión.<br>**Lab:** Provisión en la nube con Neo4j AuraDB Free ($0), modelado e ingesta GraphCommerce con `MERGE`, comparativa empírica SQL vs Cypher, recomendaciones colaborativas, caminos mínimos (`shortestPath`) y detección de anillos de fraude. |
 | **[05. ELT con Dataflow e Iceberg](05-elt-dataflow-iceberg/)** | 📖 [Teoría](05-elt-dataflow-iceberg/teoria.md)<br>🛠️ [Laboratorio](05-elt-dataflow-iceberg/lab.md) | ELT programático con Apache Beam, CDC vía Datastream hacia Cloud Storage y Bronze/Silver Iceberg | Cloud SQL (PostgreSQL), Datastream, Cloud Storage, Apache Beam / Dataflow, BigQuery (tablas Iceberg gestionadas + datamart nativo), Looker Studio | **Teoría:** Modelo de programación de Beam (PCollection, ParDo, GroupByKey), Dataflow como servicio gestionado, CDC de Datastream como archivos Avro anidados, por qué escribir Iceberg vía BigQuery en vez del conector nativo `IcebergIO`.<br>**Lab (taller de 2h):** Stream de Datastream Cloud SQL→GCS, tres jobs de Dataflow (Bronze → Silver con deduplicación de CDC → Gold) que terminan en un datamart `fact_sales`/`dim_customer`/`dim_product` en BigQuery. |
+| **[06. Data Mesh y Data Fabric con Knowledge Catalog](06-knowledge-catalog-mesh-fabric/)** | 📖 [Teoría](06-knowledge-catalog-mesh-fabric/teoria.md)<br>🛠️ [Laboratorio](06-knowledge-catalog-mesh-fabric/lab.md) | Gobierno de datos federado: Data Mesh (organizacional) vs. Data Fabric (tecnológico), y Knowledge Catalog como pieza técnica de Google Cloud | Knowledge Catalog (antes Dataplex Universal Catalog / Data Catalog), BigQuery | **Teoría:** Los 4 principios de Data Mesh, capas de un Data Fabric, tabla comparativa Mesh vs. Fabric, evolución de nombres del producto y matriz de decisión.<br>**Lab (taller de 1h):** Glosario de negocio federado entre dos dominios, Aspect Type como contrato de gobernanza, Data Product publicado y descubrible, búsqueda cruzando dominios — costo $0. |
 
 ---
 
@@ -40,9 +41,13 @@ analytics-architectures-labs/
 │   ├── teoria.md                      ← Marco conceptual: NoSQL, LPG, Index-Free Adjacency, Cypher, GraphRAG
 │   └── lab.md                         ← Codelab: Neo4j AuraDB Free, Cypher vs SQL, recomendaciones y fraude
 │
-└── 05-elt-dataflow-iceberg/
-    ├── teoria.md                      ← Marco conceptual: modelo de programación Beam, Datastream a GCS, Iceberg vía BigQuery
-    └── lab.md                         ← Codelab (taller 2h): Datastream CDC + Dataflow Bronze/Silver/Gold + datamart BigQuery
+├── 05-elt-dataflow-iceberg/
+│   ├── teoria.md                      ← Marco conceptual: modelo de programación Beam, Datastream a GCS, Iceberg vía BigQuery
+│   └── lab.md                         ← Codelab (taller 2h): Datastream CDC + Dataflow Bronze/Silver/Gold + datamart BigQuery
+│
+└── 06-knowledge-catalog-mesh-fabric/
+    ├── teoria.md                      ← Marco conceptual: Data Mesh (4 principios), Data Fabric, Knowledge Catalog
+    └── lab.md                         ← Codelab (taller 1h): Glosario federado, Aspect Types, Data Product, búsqueda cruzada
 ```
 
 ---
@@ -55,6 +60,7 @@ flowchart LR
     B --> C["03. Formatos & Lakehouse\n(Parquet/Avro + Iceberg/Delta)"]
     C --> D["04. NoSQL & Grafos\n(LPG + Cypher + Neo4j Aura)"]
     D --> E["05. ELT con Dataflow\n(Beam + CDC a GCS + Iceberg)"]
+    E --> F["06. Mesh & Fabric\n(Knowledge Catalog)"]
 ```
 
 1. **Módulo 01:** Comienza entendiendo los paradigmas de ingesta e integración moderna (ELT, CDC) y cómo estructurar el almacenamiento en capas Medallion organizando un bus dimensional con Dataform.
@@ -62,12 +68,13 @@ flowchart LR
 3. **Módulo 03:** Comprende las bases del Data Lakehouse abierto: cómo se serializan los datos en disco y cómo los formatos de tabla abiertos desacoplan el almacenamiento del cómputo evitando el *vendor lock-in*.
 4. **Módulo 04:** Descubre el paradigma NoSQL orientado a grafos, comprendiendo la arquitectura de *Index-Free Adjacency* para resolver consultas hiperconectadas sin la explosión de `JOIN`s de los modelos relacionales.
 5. **Módulo 05:** Cierra el círculo combinando los tres módulos anteriores: usa Datastream (Módulo 01) para entregar CDC como archivos a un lago de datos, Apache Beam/Dataflow como motor programático de transformación cuando el SQL declarativo no basta, y tablas Iceberg gestionadas en BigQuery (Módulo 03) como el lakehouse abierto donde aterrizan Bronze y Silver antes del datamart Gold.
+6. **Módulo 06:** Da un paso atrás de la implementación técnica y pregunta *quién es dueño de qué* y *cómo se descubre todo*: Data Mesh (organizacional) y Data Fabric (tecnológico) como los dos paradigmas que resuelven el gobierno de datos cuando ya no hay un solo equipo central — con Knowledge Catalog como la pieza concreta de Google Cloud. Es independiente de los módulos anteriores, ideal como cierre conceptual del recorrido.
 
 ---
 
 ## 🚀 Prerrequisitos Generales
 
-- **Cuenta de Google Cloud** con facturación habilitada y un proyecto activo (para Módulos 01, 02, 03 y 05).
+- **Cuenta de Google Cloud** con facturación habilitada y un proyecto activo (para Módulos 01, 02, 03, 05 y 06).
 - **Google Cloud SDK (`gcloud`)** instalado y autenticado:
   ```bash
   gcloud auth login
@@ -107,6 +114,7 @@ Los laboratorios están diseñados para aprovechar al máximo el **GCP Free Tier
 | **Cloud SQL / Datastream (Módulos 01 y 05)** | Usan instancias mínimas (`db-f1-micro`) | ⚠️ **No son gratuitos mientras estén en ejecución.** Es indispensable apagarlos o eliminarlos al terminar la sesión. |
 | **Dataflow (Módulo 05)** | 3 jobs batch cortos (~10-15 min cada uno) | ⚠️ **No es gratuito.** Cada job aprovisiona y libera sus propios workers; el costo es bajo para este volumen pero no es $0. |
 | **Cargas hacia tablas Iceberg gestionadas (Módulo 05)** | `LOAD JOB`/mantenimiento en `bronze`/`silver` | ⚠️ **No cubierto por la capa gratuita de BigQuery.** Se factura con slots Enterprise pay-as-you-go, a diferencia de las cargas a tablas nativas. |
+| **Knowledge Catalog (Módulo 06)** | Glosario, Aspect Types, Data Products, búsqueda | ✅ Sin costo — organización de metadata, propagación de políticas y búsqueda (incluida en lenguaje natural) son gratuitas. ⚠️ Evita "Data Insights" (Gemini, facturado desde el 27-oct-2026) y los *discovery scans* automáticos. |
 
 ---
 
@@ -117,6 +125,7 @@ Los laboratorios están diseñados para aprovechar al máximo el **GCP Free Tier
   - **Módulos 02 y 03:** Utilizan la multi-región `US` (necesaria para consumir directamente los datasets de `bigquery-public-data`).
   - **Módulo 04:** Utiliza la región cloud de tu preferencia en Neo4j Aura (GCP o AWS).
   - **Módulo 05:** Utiliza la región `us-central1` para Cloud SQL, Datastream, Dataflow y los datasets de BigQuery (deben coincidir para minimizar latencia y evitar cargos de transferencia entre regiones).
+  - **Módulo 06:** Utiliza la región `us-central1` para los datasets de BigQuery, el glosario, los Aspect Types y el Data Product (los activos de un Data Product deben estar en la misma región que el producto).
 - **Seguridad:** Los nombres de usuario, contraseñas e IPs en los laboratorios son estrictamente ilustrativos; nunca uses credenciales reales en texto plano ni abras firewalls a `0.0.0.0/0` fuera de entornos de laboratorio aislados.
 
 ---
