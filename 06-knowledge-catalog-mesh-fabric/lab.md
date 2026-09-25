@@ -250,7 +250,7 @@ Hasta aquí, cualquiera con acceso a `sales.orders` ve el monto real de cada ven
 
 ### 6.1. Crear la taxonomía y el policy tag
 
-1. Ve a **Knowledge Catalog → Policy tag taxonomies** (o busca "Policy tag taxonomies" en el buscador de la consola).
+1. Ve a **Bigquery → Policy tag taxonomies** (o busca "Policy tag taxonomies" en el buscador de la consola).
 2. Clic en **Create taxonomy**.
    - **Nombre:** `RetailCo Data Classification`
    - **Location:** `us-central1` (debe coincidir con la región de tus tablas de BigQuery)
@@ -294,9 +294,9 @@ bq update "${PROJECT_ID}:sales.orders" orders_schema.json
 
 ### 6.3. Crear la regla de enmascaramiento
 
-1. Vuelve a **Knowledge Catalog → Policy tag taxonomies** → `RetailCo Data Classification` → policy tag `Confidential Financial`.
+1. Vuelve a **Bigquery → Policy tag taxonomies** → `RetailCo Data Classification` → policy tag `Confidential Financial`.
 2. Clic en **Manage Data Policies**.
-   - **Data Policy Name:** `mask-financial-amount`
+   - **Data Policy Name:** `mask_financial_amount`
    - **Masking Rule:** `Hash (SHA-256)`
    - **Principal:** tu propio correo (o un Google Group que tengas a mano)
 3. **Submit**. La consola te otorga automáticamente el rol **BigQuery Masked Reader** a ese principal.
