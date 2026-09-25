@@ -6,11 +6,11 @@
 
 ---
 
-## Codelab — Taller de 1 hora: "RetailCo, Dos Dominios"
+## Codelab — Taller de 90 minutos: "RetailCo, Dos Dominios"
 
-**RetailCo** tiene dos equipos que generan datos de forma totalmente independiente: **Ventas** (dueño de `sales.orders`) y **Marketing** (dueño de `marketing.campaigns`). Nadie más los edita. Ambos comparten un concepto de negocio — `customer_id` — pero hasta hoy no hay ningún vocabulario común ni forma de descubrir qué existe en el otro dominio sin preguntar por Slack.
+**RetailCo** tiene dos equipos que generan datos de forma totalmente independiente: **Ventas** (dueño de `sales.orders`) y **Marketing** (dueño de `marketing.campaigns`). Nadie más los edita. Ambos comparten un concepto de negocio — `customer_id` — pero hasta hoy no hay ningún vocabulario común ni forma de descubrir qué existe en el otro dominio sin preguntar por Slack, ni control sobre quién puede ver el monto real de una venta.
 
-En este taller vas a usar **Knowledge Catalog** para resolver exactamente eso: un glosario de negocio compartido, un "contrato" de gobernanza que cada dominio se autoaplica, un Data Product publicado y descubrible, y una búsqueda que cruza ambos dominios.
+En este taller vas a usar **Knowledge Catalog** para resolver todo eso: un glosario de negocio compartido, un "contrato" de gobernanza que cada dominio se autoaplica, un Data Product publicado y descubrible, una búsqueda que cruza ambos dominios, una columna financiera sensible enmascarada para quien no tenga el permiso correcto, y el linaje automático activado entre dominios.
 
 ```
 ARQUITECTURA DEL LABORATORIO — RETAILCO
@@ -31,11 +31,14 @@ ARQUITECTURA DEL LABORATORIO — RETAILCO
                  │   (gobierno federado)           │
                  │ • Data Product publicado        │
                  │ • Búsqueda cruzando dominios    │
+                 │ • Policy Tag + enmascaramiento  │
+                 │   (sales.orders.amount)         │
+                 │ • Linaje automático (24h)       │
                  └───────────────────────────────┘
 ```
 
 > [!NOTE]
-> Este es un taller casi 100% de **consola** (Knowledge Catalog no tiene comandos `gcloud` dedicados para glosarios/aspectos/data products todavía — se gestionan por Console o API REST). Usarás Cloud Shell solo para crear las 2 tablas de BigQuery.
+> Este es un taller mayormente de **consola** (Knowledge Catalog no tiene comandos `gcloud` dedicados para glosarios/aspectos/data products/policy tags todavía — se gestionan por Console o API REST). Usarás Cloud Shell para crear las tablas de BigQuery, editar el esquema de una columna (Paso 6) y habilitar la API de linaje (Paso 7).
 
 ---
 
@@ -49,20 +52,24 @@ Al terminar este laboratorio serás capaz de:
 4. Empaquetar una tabla como **Data Product**: nombre, dueño, activos, y publicarlo para que sea descubrible.
 5. Vincular columnas de tablas de *distintos* dominios al mismo término de glosario.
 6. Buscar en el catálogo cruzando dominios por término de negocio y por campo de aspecto.
+7. Clasificar una columna sensible con una **taxonomía y policy tag**, y aplicarle una regla de **enmascaramiento dinámico** (Hash SHA-256) — viendo la diferencia entre un usuario con permiso de lectura sin máscara y uno sin ese permiso.
+8. Habilitar el **linaje automático** de BigQuery entre tablas de distintos dominios (y entender por qué no se puede verificar en vivo en este mismo taller).
 
 ### Prerrequisitos
 
 - Proyecto de Google Cloud con facturación habilitada.
-- Cloud Shell (para las 2 tablas de BigQuery) + acceso a la consola web de Google Cloud.
-- Rol de Owner o Editor en el proyecto (para crear Data Products necesitas, como mínimo, `roles/dataplex.dataProductsAdmin`; Owner ya lo incluye).
+- Cloud Shell (para las tablas de BigQuery y los comandos de IAM) + acceso a la consola web de Google Cloud.
+- Rol de Owner en el proyecto (más simple para este taller). Si usas un rol más granular, como mínimo necesitas: `roles/dataplex.dataProductsAdmin` (Data Products), `roles/datacatalog.policyTagAdmin` (crear la taxonomía y los policy tags del Paso 6), y `roles/bigquery.admin` (o `roles/bigquery.dataOwner`) + `roles/datacatalog.admin` (o `roles/datacatalog.viewer`) para activar `Enforce access control`.
 - Conocimientos básicos de SQL. No requiere haber hecho otros módulos de este repositorio.
 
 ### Costo Estimado (FinOps)
 
 | Concepto | Recurso en el Lab | ¿Cubierto por capa gratuita? | Estimado |
 |---|---|---|---|
-| **Business Glossary, Aspect Types, Data Product** | Metadata de gobierno | ✅ Sí — sin costo (ver [teoría §8](teoria.md#8-costos-y-límites)) | **$0.00** |
+| **Business Glossary, Aspect Types, Data Product** | Metadata de gobierno | ✅ Sí — sin costo (ver [teoría §10](teoria.md#10-costos-y-límites)) | **$0.00** |
 | **Búsqueda del catálogo** (incluida en lenguaje natural) | Discovery/search | ✅ Sí — explícitamente sin cargo | **$0.00** |
+| **Taxonomías, Policy Tags y enmascaramiento dinámico** | Clasificación + reglas de máscara | ✅ Sí — GA, sin cargo de licencia aparte del procesamiento normal de BigQuery | **$0.00** |
+| **Linaje automático de BigQuery** | Metadata de dependencias entre jobs | ✅ Sí — igual que el resto de la metadata técnica auto-ingerida | **$0.00** |
 | **BigQuery** (2 tablas mínimas) | Storage + queries de creación | ✅ Sí (10 GiB / 1 TiB gratis al mes) | **$0.00** |
 
 > [!WARNING]
@@ -70,7 +77,7 @@ Al terminar este laboratorio serás capaz de:
 
 ---
 
-### Mapa del Laboratorio (Taller de 60 minutos)
+### Mapa del Laboratorio (Taller de 90 minutos)
 
 ```
 Paso 0  (5 min)   Aprovisionar: 2 tablas BigQuery (sales.orders, marketing.campaigns)
@@ -79,7 +86,9 @@ Paso 2  (10 min)  Aspect Type "Domain Contract" -gobierno federado por dominio
 Paso 3  (10 min)  Vincular columnas de AMBOS dominios al mismo glosario
 Paso 4  (10 min)  Crear y publicar un Data Product (sales.orders)
 Paso 5  (10 min)  Búsqueda cruzando dominios
-Paso 6  (5 min)   Limpieza + Retos Opcionales
+Paso 6  (20 min)  Seguridad: Policy Tag + enmascaramiento (Hash) en sales.orders.amount
+Paso 7  (10 min)  Linaje: habilitar Data Lineage API + vista cruzando dominios
+Paso 8  (5 min)   Limpieza + Retos Opcionales
 ```
 
 ---
@@ -235,7 +244,103 @@ Ahora, el momento de verdad: ¿puedes descubrir y filtrar activos de **ambos** d
 
 ---
 
-## Paso 6 — Limpieza (5 min)
+## Paso 6 — Seguridad: Clasificación y Enmascaramiento (20 min)
+
+Hasta aquí, cualquiera con acceso a `sales.orders` ve el monto real de cada venta. Vamos a clasificar la columna `amount` como dato financiero sensible y aplicarle una regla de enmascaramiento — sin tocar el Data Product ni el Glosario que ya construiste.
+
+### 6.1. Crear la taxonomía y el policy tag
+
+1. Ve a **Knowledge Catalog → Policy tag taxonomies** (o busca "Policy tag taxonomies" en el buscador de la consola).
+2. Clic en **Create taxonomy**.
+   - **Nombre:** `RetailCo Data Classification`
+   - **Location:** `us-central1` (debe coincidir con la región de tus tablas de BigQuery)
+3. Agrega un policy tag:
+   - **Nombre:** `Confidential Financial`
+   - **Descripción:** *"Montos financieros — solo lectura sin máscara para roles autorizados."*
+4. **Create**.
+
+> [!IMPORTANT]
+> Crear la taxonomía y el policy tag **todavía no restringe nada** — son solo etiquetas. El siguiente paso es el que realmente activa el control de acceso (ver [teoría §8.2](teoria.md#8-seguridad-cifrado-y-enmascaramiento-de-datos)).
+
+5. Dentro de la taxonomía `RetailCo Data Classification`, clic en **Enforce access control** (si no está ya activado).
+
+### 6.2. Adjuntar el policy tag a la columna `amount`
+
+BigQuery no permite asignar policy tags desde `CREATE TABLE` — hay que editar el esquema:
+
+```bash
+bq show --schema --format=prettyjson "${PROJECT_ID}:sales.orders" > orders_schema.json
+cat orders_schema.json
+```
+
+`orders_schema.json` ya tiene los 4 campos de la tabla (`order_id`, `customer_id`, `amount`, `order_date`) como un arreglo. **No reemplaces el archivo completo** — busca dentro de ese arreglo el bloque del campo `amount` (debería verse como `{"name": "amount", "type": "FLOAT", "mode": "NULLABLE"}`) y agrégale la clave `policyTags`, dejando los otros 3 campos intactos, así:
+
+```json
+{
+  "name": "amount",
+  "type": "FLOAT",
+  "mode": "NULLABLE",
+  "policyTags": {
+    "names": ["projects/TU_PROYECTO_ID/locations/us-central1/taxonomies/TAXONOMY_ID/policyTags/POLICYTAG_ID"]
+  }
+}
+```
+
+Reemplaza `TU_PROYECTO_ID` y el `TAXONOMY_ID`/`POLICYTAG_ID` que veas en la consola (en la página de tu policy tag → **Copy ID**). Guarda el archivo completo (con los 4 campos) y aplícalo:
+
+```bash
+bq update "${PROJECT_ID}:sales.orders" orders_schema.json
+```
+
+### 6.3. Crear la regla de enmascaramiento
+
+1. Vuelve a **Knowledge Catalog → Policy tag taxonomies** → `RetailCo Data Classification` → policy tag `Confidential Financial`.
+2. Clic en **Manage Data Policies**.
+   - **Data Policy Name:** `mask-financial-amount`
+   - **Masking Rule:** `Hash (SHA-256)`
+   - **Principal:** tu propio correo (o un Google Group que tengas a mano)
+3. **Submit**. La consola te otorga automáticamente el rol **BigQuery Masked Reader** a ese principal.
+
+### 6.4. Verificar el antes y el después
+
+```sql
+SELECT order_id, amount FROM `TU_PROYECTO_ID.sales.orders`;
+```
+
+Con solo el rol **Masked Reader** (lo que acabas de recibir en 6.3), la columna `amount` te devuelve el hash SHA-256, no el número real. Si además te otorgas el rol **Data Catalog Fine-Grained Reader** (`roles/datacatalog.categoryFineGrainedReader`) sobre ese mismo policy tag — desde la pestaña de permisos IAM del policy tag en la consola — la misma consulta te devuelve el `amount` real, sin máscara.
+
+> [!NOTE]
+> Sin **ninguno** de los dos roles sobre el policy tag, la consulta directamente **falla** al tocar la columna `amount` — ni la ves enmascarada ni real. Los tres estados (real / enmascarado / denegado) son intencionales: es la forma en que BigQuery aplica "necesito saber" a nivel de columna, no solo de tabla.
+
+---
+
+## Paso 7 — Linaje: Habilitar y Conectar Dominios (10 min)
+
+```bash
+gcloud services enable datalineage.googleapis.com
+```
+
+Ahora corre una consulta que **cruza los dos dominios** (algo que ya hiciste conceptualmente en el Paso 5 vía búsqueda, pero ahora como dato real):
+
+```sql
+CREATE OR REPLACE VIEW `marketing.customer_value` AS
+SELECT
+  o.customer_id,
+  SUM(o.amount) AS total_revenue,
+  SUM(c.spend) AS total_marketing_spend
+FROM `sales.orders` o
+JOIN `marketing.campaigns` c USING (customer_id)
+GROUP BY o.customer_id;
+```
+
+> [!WARNING]
+> **No vas a ver el grafo de linaje hoy.** La documentación oficial de Google Cloud es explícita: el linaje de BigQuery **tarda hasta 24 horas** en aparecer en Knowledge Catalog después de que un job termina. Este paso es de **configuración**, no de verificación en vivo — habilitaste la API y generaste el evento (el `CREATE VIEW` que acabas de correr), pero el grafo lo revisas en otra sesión, no en este taller.
+
+**Para revisarlo más tarde** (mañana, por ejemplo): ve a **Knowledge Catalog → Search**, busca `customer_value`, abre la entrada de la vista, y clic en la pestaña **Lineage**. Deberías ver `sales.orders` y `marketing.campaigns` como nodos *upstream* — la prueba automática de que esta vista efectivamente cruza dos dominios, sin que nadie haya documentado esa dependencia a mano.
+
+---
+
+## Paso 8 — Limpieza (5 min)
 
 ```bash
 bq rm --recursive --force "${PROJECT_ID}:sales"
@@ -246,6 +351,8 @@ Luego, en la consola de Google Cloud:
 1. **Knowledge Catalog → Data products** → abre `Sales Orders` → elimínalo.
 2. **Knowledge Catalog → Glossaries** → abre `RetailCo Business Glossary` → elimínalo (borra también sus categorías/términos).
 3. **Knowledge Catalog → Metadata types → Aspect types (Custom)** → elimina `Domain Contract`.
+4. **Knowledge Catalog → Policy tag taxonomies** → `RetailCo Data Classification` → policy tag `Confidential Financial` → **Manage Data Policies** → elimina `mask-financial-amount` **antes** de eliminar la taxonomía (BigQuery no te deja borrar una taxonomía con políticas de datos activas colgando de ella).
+5. Elimina la taxonomía `RetailCo Data Classification`.
 
 > [!NOTE]
 > A diferencia de otros módulos de este repositorio, aquí no hay ninguna instancia de cómputo (Cloud SQL, Dataflow, Datastream) corriendo en segundo plano — todo lo creado en este lab es metadata gratuita, así que la limpieza es por prolijidad, no por costo.
@@ -287,6 +394,28 @@ Lo primero que se rompe con un Sheet manual es el principio #4 (gobierno federad
 
 </details>
 
+### Reto 4: Enmascara también `marketing.campaigns.spend`
+
+Repite el Paso 6 completo para la columna `spend` de Marketing, pero esta vez usa la regla **`Default masking value`** en vez de `Hash (SHA-256)`. Compara qué tan fácil es para alguien deducir información con cada tipo de máscara (ej. ¿un `0` repetido en todas las filas filtra menos o más que un hash distinto por fila?).
+
+<details>
+<summary>👀 Ver Pista de Solución Reto 4</summary>
+
+Con `Default masking value`, todas las filas enmascaradas devuelven exactamente el mismo valor (`0.0`) — no filtra nada sobre las diferencias entre filas, pero tampoco permite ningún análisis agregado (ni siquiera un COUNT de valores distintos tiene sentido). Con `Hash (SHA-256)`, cada valor distinto produce un hash distinto pero *consistente* — alguien podría, en teoría, contar cuántos valores únicos hay o hacer un JOIN por el hash sin ver el valor real. La elección depende de si necesitas preservar utilidad analítica (hash) o maximizar el ocultamiento (default value / nullify).
+
+</details>
+
+### Reto 5: Compara Knowledge Catalog contra OpenLineage + un catálogo self-hosted
+
+Con lo que leíste en [teoría §7](teoria.md#7-marcos-de-gobernanza-catálogo-diccionario-y-linaje), escribe (en un párrafo) en qué escenario elegirías **OpenLineage + un catálogo open-source (DataHub)** en vez de Knowledge Catalog para RetailCo — y qué tendrías que operar tú mismo que hoy Knowledge Catalog te da gratis.
+
+<details>
+<summary>👀 Ver Pista de Solución Reto 5</summary>
+
+Elegirías la ruta open-source si RetailCo no viviera 100% en Google Cloud — por ejemplo, si Marketing usa Snowflake y Ventas usa BigQuery, ningún catálogo nativo de una sola nube ve ambos lados. El costo es que tendrías que operar tú mismo la infraestructura del catálogo (backend de grafos/búsqueda) y los conectores/agentes que emiten eventos OpenLineage desde cada motor — todo lo que en este lab tuviste gratis y sin mantener (auto-ingesta de metadata, linaje automático, hosting) se vuelve trabajo de plataforma propio.
+
+</details>
+
 ---
 
 ## Resumen de lo Aprendido
@@ -294,6 +423,9 @@ Lo primero que se rompe con un Sheet manual es el principio #4 (gobierno federad
 - **Data Mesh es una decisión organizacional** (quién es dueño, cómo se publica) — **Data Fabric es la tecnología** (cómo se descubre y conecta automáticamente). Knowledge Catalog es la pieza de Fabric de Google Cloud, con el recurso `Data Product` diseñado específicamente para operacionalizar Mesh encima.
 - **El vocabulario compartido (Glosario) y el gobierno federado (Aspect Types) no requieren centralizar el dato** — cada dominio sigue siendo dueño de su tabla, pero ambos hablan el mismo idioma y se auditan con el mismo formato.
 - **La búsqueda cruzando dominios es lo que hace que Mesh escale** — sin ella, cada dominio nuevo es un silo más que hay que descubrir preguntando, no buscando.
+- **El enmascaramiento dinámico es gobierno federado aplicado a seguridad:** la regla vive pegada al dato (vía Policy Tag), no en un documento de políticas separado — y requiere activar explícitamente "Enforce access control", algo fácil de olvidar.
+- **El linaje automático de BigQuery no es instantáneo** — hasta 24h de retraso — así que en un entorno real lo configuras una vez y lo consultas después, no lo verificas en la misma sesión en la que corriste la query.
+- **OpenLineage es el estándar abierto para linaje multi-herramienta**; Amundsen (el catálogo open-source de Lyft) fue archivado en septiembre de 2026 — si necesitas un catálogo self-hosted y vendor-neutral hoy, DataHub es la alternativa activa a evaluar.
 - **El producto se llama Knowledge Catalog desde abril de 2026** — si ves tutoriales que hablan de "Data Catalog" (el original, deprecado el 1-jun-2026) o "Dataplex Universal Catalog", son la misma familia de producto con nombres anteriores.
 
 ---
@@ -307,3 +439,7 @@ Lo primero que se rompe con un Sheet manual es el principio #4 (gobierno federad
 - [Manage a business glossary](https://docs.cloud.google.com/dataplex/docs/manage-glossaries)
 - [Knowledge Catalog pricing](https://cloud.google.com/products/knowledge-catalog/pricing)
 - [Codelab oficial: Foundational Governance with Knowledge Catalog](https://codelabs.developers.google.com/dataplex-foundational-governance)
+- [Restrict access with column-level access control](https://docs.cloud.google.com/bigquery/docs/column-level-security)
+- [Introduction to data masking](https://docs.cloud.google.com/bigquery/docs/column-data-masking-intro)
+- [View data lineage for Google Cloud systems](https://docs.cloud.google.com/dataplex/docs/use-lineage)
+- [OpenLineage](https://openlineage.io/)

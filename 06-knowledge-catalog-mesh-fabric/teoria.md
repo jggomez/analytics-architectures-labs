@@ -16,9 +16,11 @@
 4. [Mesh vs. Fabric: No Son lo Mismo, No Son Excluyentes](#4-mesh-vs-fabric-no-son-lo-mismo-no-son-excluyentes)
 5. [Knowledge Catalog: la Pieza Técnica de Google Cloud](#5-knowledge-catalog-la-pieza-técnica-de-google-cloud)
 6. [De Conceptos a Recursos: Cómo Knowledge Catalog Implementa Mesh y Fabric](#6-de-conceptos-a-recursos-cómo-knowledge-catalog-implementa-mesh-y-fabric)
-7. [Matriz de Decisión](#7-matriz-de-decisión)
-8. [Costos y Límites](#8-costos-y-límites)
-9. [Referencias Técnicas](#9-referencias-técnicas)
+7. [Marcos de Gobernanza: Catálogo, Diccionario y Linaje](#7-marcos-de-gobernanza-catálogo-diccionario-y-linaje)
+8. [Seguridad: Cifrado y Enmascaramiento de Datos](#8-seguridad-cifrado-y-enmascaramiento-de-datos)
+9. [Matriz de Decisión](#9-matriz-de-decisión)
+10. [Costos y Límites](#10-costos-y-límites)
+11. [Referencias Técnicas](#11-referencias-técnicas)
 
 ---
 
@@ -153,7 +155,92 @@ Knowledge Catalog es, en términos de la arquitectura del §3, la capa de **meta
 
 ---
 
-## 7. Matriz de Decisión
+## 7. Marcos de Gobernanza: Catálogo, Diccionario y Linaje
+
+Un marco de gobierno de datos completo se apoya en tres piezas de metadata, no solo el catálogo:
+
+```
+LAS 3 PIEZAS DE UN MARCO DE GOBERNANZA
+
+1. CATÁLOGO          ¿Qué activos existen y dónde están?
+   (§5-6 de este documento: Knowledge Catalog, Data Products, búsqueda)
+
+2. DICCIONARIO        ¿Qué SIGNIFICA cada campo, en lenguaje de negocio?
+   (§1 del Lab: Business Glossary — "Customer", "Revenue"...)
+
+3. LINAJE              ¿De DÓNDE vino este dato y A DÓNDE va?
+   (Nuevo en este módulo: qué tablas/queries alimentaron a cuáles)
+```
+
+Las dos primeras ya las construiste en el Lab 06 (Pasos 0-5). El **linaje** es la pieza que responde "si esta métrica está mal, ¿qué tablas río arriba pudieron causarlo?" o "si cambio esta columna, ¿qué se rompe río abajo?" — información que ningún glosario ni catálogo estático puede darte por sí solo.
+
+### 7.1. El estándar abierto: OpenLineage
+
+**OpenLineage** es una especificación abierta (proyecto **Graduado** de la Linux Foundation AI & Data, no un producto de un solo vendor) para capturar eventos de linaje de forma consistente entre herramientas distintas: Airflow, Spark, dbt, Flink y otras emiten eventos OpenLineage cuando corren un job, y cualquier backend compatible los puede recibir. **Marquez** es el backend de referencia (también LF AI & Data) que los almacena y visualiza.
+
+**Por qué importa incluso si usas Knowledge Catalog:** si tu organización es multi-nube o tiene herramientas de datos que no son de Google (Airflow on-prem, Spark en Databricks, dbt), OpenLineage es el mecanismo para que el linaje de *esas* herramientas también termine en un solo lugar, en vez de tener un grafo de linaje por cada nube/herramienta.
+
+### 7.2. Catálogos open-source: Amundsen y DataHub
+
+> [!WARNING]
+> **Amundsen** (el catálogo de datos open-source creado por Lyft en 2019, donado a Linux Foundation AI en 2020) **fue archivado en septiembre de 2026 por inactividad** — su repositorio quedó en solo lectura, sin mantenimiento activo. Lo cubrimos aquí porque es un referente histórico importante y todavía aparece mencionado en mucha literatura de arquitectura de datos, pero **no lo recomendamos para un proyecto nuevo en 2026**.
+
+| | Amundsen (archivado, 2026) | DataHub (activo) | Knowledge Catalog (GCP nativo) |
+|---|---|---|---|
+| **Origen** | Lyft (2019) | LinkedIn (2019) | Google Cloud |
+| **Estado (2026)** | Archivado, solo lectura | Activo, mantenido | Activo, GA |
+| **Infraestructura propia** | Sí (Neo4j/Elasticsearch) | Sí (varios backends) | No — es SaaS gestionado |
+| **Multi-nube / vendor-neutral** | Sí | Sí | No — solo GCP |
+| **Costo de operación** | Auto-hospedado (cómputo + mantenimiento) | Auto-hospedado (cómputo + mantenimiento) | Incluido en Google Cloud, sin cargo por catalogación |
+
+**Por qué el Lab 06 no monta Amundsen/DataHub:** requieren su propia infraestructura (mínimo un grafo tipo Neo4j + un motor de búsqueda tipo Elasticsearch, típicamente en GKE o Compute Engine) — eso es, en sí mismo, un proyecto de varias horas, no algo que quepa en un taller de $0 y menos de 2 horas. Si tu organización necesita un catálogo **multi-nube** (no solo GCP), DataHub es hoy la opción open-source activa a evaluar; si vives 100% en Google Cloud, Knowledge Catalog te da lo mismo sin operar infraestructura propia.
+
+---
+
+## 8. Seguridad: Cifrado y Enmascaramiento de Datos
+
+### 8.1. Cifrado en reposo y en tránsito (la parte que casi nunca tienes que configurar)
+
+En Google Cloud, **el cifrado en reposo y en tránsito es automático por defecto** en BigQuery, Cloud Storage y el resto de servicios usados en este repositorio — no hay un interruptor que prender ni un paso de laboratorio que hacer. Google gestiona las claves de cifrado (*Google-managed encryption keys*) de forma transparente. La única decisión real que toma un arquitecto aquí es si usar las claves gestionadas por Google (por defecto, $0 adicional) o migrar a **CMEK** (*Customer-Managed Encryption Keys*, vía Cloud KMS) cuando hay un requisito de cumplimiento que exige control explícito y rotación propia de las claves — una decisión de gobierno corporativo, no algo que se resuelva con un ejercicio de 15 minutos, por eso no tiene un paso dedicado en el lab.
+
+### 8.2. Enmascaramiento dinámico: la seguridad que SÍ es hands-on
+
+Donde la seguridad de datos se vuelve una decisión de **diseño de gobernanza** (no solo de infraestructura) es en el control de acceso **a nivel de columna** — la pregunta de "¿quién puede ver el valor real de esta columna sensible, y quién debería ver una versión enmascarada?"
+
+En BigQuery esto se construye con dos piezas, ambas gestionadas dentro de Knowledge Catalog:
+
+```
+DE COLUMNA SENSIBLE A COLUMNA ENMASCARADA
+
+1. TAXONOMÍA + POLICY TAG          Clasificas la columna: "esto es dato
+   (Knowledge Catalog)              financiero confidencial"
+
+2. REGLA DE ENMASCARAMIENTO         Defines QUÉ ve alguien sin el permiso
+   (Data Policy, vinculada           de "lectura sin máscara": NULL, un
+   al Policy Tag)                    valor por defecto, un hash SHA-256...
+
+3. ROLES IAM (sobre el Policy Tag, NO sobre la tabla)
+   - Data Catalog Fine-Grained Reader → ve el valor REAL
+   - BigQuery Masked Reader           → ve el valor ENMASCARADO
+   - Ninguno de los dos               → la query falla en esa columna
+```
+
+**Reglas de enmascaramiento predefinidas disponibles:** `Nullify` (NULL), `Default masking value` (valor por defecto del tipo, ej. `0` o `""`), `Hash (SHA-256)`, `Random hash` (hash con sal aleatoria por consulta), `Email mask` (oculta el nombre de usuario, conserva el dominio), `First/Last four characters` (muestra solo 4 caracteres), `Date year mask` (trunca una fecha a solo el año), o una **rutina custom** (una función SQL propia).
+
+> [!IMPORTANT]
+> Hay un detalle fácil de pasar por alto: **crear la taxonomía y el policy tag no activa nada por sí solo** — son solo etiquetas hasta que haces clic explícitamente en **"Enforce access control"** sobre la taxonomía. Antes de eso, cualquiera con acceso normal a la tabla ve el dato sin ninguna restricción, aunque la columna ya tenga un policy tag asignado. Esto lo verás en el Paso 6 del [Lab 06](lab.md).
+
+Esta es, en la práctica, la forma más concreta de "gobierno computacional federado" (Data Mesh, principio #4) aplicado a seguridad: la regla de enmascaramiento vive pegada al dato (vía el Policy Tag), no en un documento de políticas separado que alguien tiene que recordar aplicar manualmente en cada consulta.
+
+### 8.3. Lo que viene después de Policy Tags: IAM Data Governance Tags
+
+Desde mediados de 2026, Google Cloud tiene en **Preview** un mecanismo más nuevo llamado **IAM Data Governance Tags** — tags de Resource Manager (los mismos que usarías para condiciones de IAM u organization policies) marcados con `purpose=DATA_GOVERNANCE`. A diferencia de los Policy Tags clásicos (regionales, taxonomía plana, acoplados a BigQuery), estos tags son **globales, jerárquicos (hasta 5 niveles) y desacoplados** (etiquetas primero, se aplican las reglas de acceso después) — pensados para organizaciones multi-región con necesidades de *disaster recovery* del propio esquema de gobierno.
+
+**Por qué el Lab 06 sigue usando Policy Tags clásicos:** siguen siendo GA, completamente soportados, y son la opción correcta para el caso de este lab — un solo proyecto, una sola región. IAM Data Governance Tags es la dirección a la que se mueve el producto para escenarios más grandes, pero al ser Preview no es la elección adecuada para un taller que además apunta a mantenerse en $0 y con la menor superficie de cosas que puedan cambiar antes de que llegue a GA.
+
+---
+
+## 9. Matriz de Decisión
 
 ```
 ¿Tienes más de un equipo generando y siendo responsable de datos de negocio?
@@ -172,10 +259,10 @@ Knowledge Catalog es, en términos de la arquitectura del §3, la capa de **meta
 
 ---
 
-## 8. Costos y Límites
+## 10. Costos y Límites
 
 > [!IMPORTANT]
-> **Gratis:** organización de datos (lakes/zonas/activos), Data Products, Aspect Types, Business Glossary, propagación de políticas de seguridad IAM, metadata técnica auto-ingerida, y **búsqueda del catálogo** (incluida la búsqueda en lenguaje natural).
+> **Gratis:** organización de datos (lakes/zonas/activos), Data Products, Aspect Types, Business Glossary, propagación de políticas de seguridad IAM, metadata técnica auto-ingerida, **búsqueda del catálogo** (incluida la búsqueda en lenguaje natural), **taxonomías, policy tags y enmascaramiento dinámico** (GA, sin cargo de licencia separado — solo pagas el procesamiento normal de BigQuery sobre esos datos), y el **linaje automático de BigQuery** (metadata de dependencias entre jobs, igual que el resto de la metadata técnica auto-ingerida).
 >
 > **De pago:** **"Data Insights"** — la función que usa Gemini para *generar* automáticamente descripciones, relaciones y consultas de ejemplo sobre tus datos — se factura por *data tokens* (entrada/salida) a partir del **27 de octubre de 2026**. También generan costo los *discovery scans* y conectores administrados (disparan jobs de Dataflow/Spark por detrás). El [Lab 06](lab.md) evita deliberadamente ambas funciones — todo lo que hace el laboratorio cae en la columna gratuita.
 
@@ -183,7 +270,7 @@ Límites publicados (nivel proyecto): hasta 5.000 términos de glosario, 200 Dat
 
 ---
 
-## 9. Referencias Técnicas
+## 11. Referencias Técnicas
 
 1. **Dehghani, Z. (2019-2022).** *How to Move Beyond a Monolithic Data Lake to a Distributed Data Mesh.* MartinFowler.com / *Data Mesh: Delivering Data-Driven Value at Scale.* O'Reilly Media.
 2. **Gartner.** *Data Fabric Architecture* — definición de referencia del patrón (activa metadata, integración automatizada).
@@ -193,3 +280,9 @@ Límites publicados (nivel proyecto): hasta 5.000 términos de glosario, 200 Dat
 6. **Google Cloud — Build foundational data governance.** [docs.cloud.google.com/dataplex/docs/build-foundational-data-governance](https://docs.cloud.google.com/dataplex/docs/build-foundational-data-governance).
 7. **Google Cloud — What is data as a product (DaaP)?** [cloud.google.com/discover/what-is-data-as-a-product](https://cloud.google.com/discover/what-is-data-as-a-product).
 8. **Google Cloud — Knowledge Catalog pricing.** [cloud.google.com/products/knowledge-catalog/pricing](https://cloud.google.com/products/knowledge-catalog/pricing).
+9. **OpenLineage.** [openlineage.io](https://openlineage.io/) — especificación abierta (LF AI & Data, proyecto Graduado) para eventos de linaje.
+10. **Lyft Engineering — Open Sourcing Amundsen.** [eng.lyft.com/open-sourcing-amundsen](https://eng.lyft.com/open-sourcing-amundsen-a-data-discovery-and-metadata-platform-2282bb436234) — contexto histórico; repositorio archivado en septiembre de 2026.
+11. **DataHub.** [datahub.com](https://datahub.com/) — catálogo open-source activo (originado en LinkedIn), alternativa multi-nube a evaluar si Amundsen ya no es viable.
+12. **Google Cloud — Restrict access with column-level access control.** [docs.cloud.google.com/bigquery/docs/column-level-security](https://docs.cloud.google.com/bigquery/docs/column-level-security).
+13. **Google Cloud — Introduction to data masking.** [docs.cloud.google.com/bigquery/docs/column-data-masking-intro](https://docs.cloud.google.com/bigquery/docs/column-data-masking-intro).
+14. **Google Cloud — View data lineage for Google Cloud systems.** [docs.cloud.google.com/dataplex/docs/use-lineage](https://docs.cloud.google.com/dataplex/docs/use-lineage).
