@@ -134,9 +134,7 @@ gcloud storage buckets add-iam-policy-binding "$BUCKET" \
 gcloud storage buckets add-iam-policy-binding "$BUCKET" \
   --member="serviceAccount:${SA}" --role="roles/storage.legacyBucketReader"
 
-# El SA de la conexion (arriba) es quien lee/escribe en GCS EN NOMBRE de BigQuery.
-# Aparte de eso, quien SUBMITEA el LOAD JOB (el worker de Dataflow, que corre como
-# el SA de Compute Engine por defecto) necesita permiso para USAR la conexion:
+# Permiso para DataFlow
 export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
