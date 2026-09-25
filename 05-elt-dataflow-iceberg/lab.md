@@ -134,8 +134,19 @@ gcloud storage buckets add-iam-policy-binding "$BUCKET" \
 gcloud storage buckets add-iam-policy-binding "$BUCKET" \
   --member="serviceAccount:${SA}" --role="roles/storage.legacyBucketReader"
 
+# El SA de la conexion (arriba) es quien lee/escribe en GCS EN NOMBRE de BigQuery.
+# Aparte de eso, quien SUBMITEA el LOAD JOB (el worker de Dataflow, que corre como
+# el SA de Compute Engine por defecto) necesita permiso para USAR la conexion:
+export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/bigquery.connectionUser"
+
 sleep 30
 ```
+
+> [!WARNING]
+> Sin el último `add-iam-policy-binding` de arriba, los Pasos 2 y 3 (Dataflow escribiendo hacia `bronze.*`/`silver.*`) fallan con `Access Denied: ... User does not have bigquery.connections.delegate permission for connection ...`. Es un permiso distinto y fácil de olvidar: el SA de la conexión necesita acceso a **GCS** (lo de arriba); el SA que **ejecuta el job de Dataflow** necesita permiso para **usar la conexión misma** (`roles/bigquery.connectionUser`, que incluye `bigquery.connections.delegate`). Si usaste una cuenta de servicio custom para los workers de Dataflow (`--service_account_email`), otorga este rol a esa cuenta en vez de al SA de Compute Engine por defecto.
 
 ### 0.3. Cloud SQL (PostgreSQL) con logical decoding habilitado
 
