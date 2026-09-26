@@ -106,6 +106,7 @@ gcloud services enable \
   datastream.googleapis.com \
   dataflow.googleapis.com \
   bigqueryconnection.googleapis.com \
+  bigquerystorage.googleapis.com \
   compute.googleapis.com
 
 gcloud storage buckets create "$BUCKET" --location="$REGION"
@@ -555,6 +556,9 @@ OPTIONS (file_format = 'PARQUET', table_format = 'ICEBERG', storage_uri = 'gs://
 > [!WARNING]
 > Las cargas batch (`LOAD JOB`, el método que usa `WriteToBigQuery` por defecto) hacia una tabla Iceberg gestionada **solo soportan `WRITE_APPEND`** — BigQuery rechaza `WRITE_TRUNCATE` en este tipo de tabla vía carga batch. Por eso el pipeline de abajo usa `WRITE_APPEND` y confía en que el Paso 3.1 ya recreó las tablas Silver vacías con `CREATE OR REPLACE TABLE`: en una sola corrida, "append a una tabla vacía" logra el mismo resultado que un truncate+load. Si necesitas volver a correr el job sin repetir el 3.1, ejecuta antes `DELETE FROM silver.orders WHERE TRUE` (DML sí soportado) para vaciarla.
 
+> [!WARNING]
+> **`ReadFromBigQuery` por defecto usa el método `EXPORT`** (un job clásico de extracción hacia GCS), y **las tablas Iceberg gestionadas no soportan `EXPORT`** — BigQuery lo rechaza con `'BigQuery tables for Apache Iceberg are not supported'`. Por eso las tres lecturas de este pipeline (y las tres del Gold en el Paso 4, que lee de `silver.*`) usan explícitamente `method=ReadFromBigQuery.Method.DIRECT_READ`, que en cambio usa la **BigQuery Storage Read API** — esa sí soporta tablas Iceberg. Por eso el Paso 0 habilitó `bigquerystorage.googleapis.com` además de `bigquery.googleapis.com`.
+
 ### 3.2. El pipeline de deduplicación
 
 ```bash
@@ -623,7 +627,10 @@ def run(argv=None):
     with beam.Pipeline(options=options) as p:
         (
             p
-            | "LeerBronzeOrders" >> ReadFromBigQuery(table=known_args.bronze_orders_table)
+            | "LeerBronzeOrders" >> ReadFromBigQuery(
+                table=known_args.bronze_orders_table,
+                method=ReadFromBigQuery.Method.DIRECT_READ,
+            )
             | "ClavePorOrderId" >> beam.Map(keyed_by_order_id)
             | "AgruparPorOrderId" >> beam.GroupByKey()
             | "QuedarseConElUltimoEvento" >> beam.Map(ultimo_evento_por_orden)
@@ -638,7 +645,10 @@ def run(argv=None):
 
         (
             p
-            | "LeerBronzeCustomers" >> ReadFromBigQuery(table=known_args.bronze_customers_table)
+            | "LeerBronzeCustomers" >> ReadFromBigQuery(
+                table=known_args.bronze_customers_table,
+                method=ReadFromBigQuery.Method.DIRECT_READ,
+            )
             | "FiltrarCustomersValidos" >> beam.Filter(lambda c: c.get("customer_id"))
             | "TiparCustomers" >> beam.Map(tipar_customer)
             | "EscribirSilverCustomers" >> WriteToBigQuery(
@@ -650,7 +660,10 @@ def run(argv=None):
 
         (
             p
-            | "LeerBronzeProducts" >> ReadFromBigQuery(table=known_args.bronze_products_table)
+            | "LeerBronzeProducts" >> ReadFromBigQuery(
+                table=known_args.bronze_products_table,
+                method=ReadFromBigQuery.Method.DIRECT_READ,
+            )
             | "FiltrarProductsValidos" >> beam.Filter(lambda pr: pr.get("product_id"))
             | "TiparProducts" >> beam.Map(tipar_product)
             | "EscribirSilverProducts" >> WriteToBigQuery(
@@ -696,7 +709,7 @@ Debes ver **exactamente 6 filas** (`ORD-0001` a `ORD-0006`), y `ORD-0004` con `s
 
 ## Paso 4 — Dataflow: Job GOLD (25 min)
 
-Gold usa **tablas BigQuery nativas** (no Iceberg): es la capa de consumo para BI, no necesita la evolución de esquema ni el time travel de Iceberg — solo lectura rápida y barata.
+Gold usa **tablas BigQuery nativas** (no Iceberg) como destino: es la capa de consumo para BI, no necesita la evolución de esquema ni el time travel de Iceberg — solo lectura rápida y barata. Pero **lee** de `silver.*`, que sí son Iceberg — por eso sus tres `ReadFromBigQuery` también usan `method=ReadFromBigQuery.Method.DIRECT_READ`, igual que en el Paso 3 (ver esa advertencia si no la leíste).
 
 ### 4.1. El pipeline dimensional
 
@@ -761,7 +774,10 @@ def run(argv=None):
     with beam.Pipeline(options=options) as p:
         (
             p
-            | "LeerSilverOrders" >> ReadFromBigQuery(table=known_args.silver_orders_table)
+            | "LeerSilverOrders" >> ReadFromBigQuery(
+                table=known_args.silver_orders_table,
+                method=ReadFromBigQuery.Method.DIRECT_READ,
+            )
             | "CalcularRevenue" >> beam.Map(calcular_revenue)
             | "EscribirFactSales" >> WriteToBigQuery(
                 known_args.gold_fact_sales_table,
@@ -773,7 +789,10 @@ def run(argv=None):
 
         (
             p
-            | "LeerSilverCustomers" >> ReadFromBigQuery(table=known_args.silver_customers_table)
+            | "LeerSilverCustomers" >> ReadFromBigQuery(
+                table=known_args.silver_customers_table,
+                method=ReadFromBigQuery.Method.DIRECT_READ,
+            )
             | "EscribirDimCustomer" >> WriteToBigQuery(
                 known_args.gold_dim_customer_table,
                 schema=DIM_CUSTOMER_SCHEMA,
@@ -784,7 +803,10 @@ def run(argv=None):
 
         (
             p
-            | "LeerSilverProducts" >> ReadFromBigQuery(table=known_args.silver_products_table)
+            | "LeerSilverProducts" >> ReadFromBigQuery(
+                table=known_args.silver_products_table,
+                method=ReadFromBigQuery.Method.DIRECT_READ,
+            )
             | "EscribirDimProduct" >> WriteToBigQuery(
                 known_args.gold_dim_product_table,
                 schema=DIM_PRODUCT_SCHEMA,
