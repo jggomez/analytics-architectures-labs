@@ -1,6 +1,6 @@
 # Arquitecturas y Patrones Analíticos en Google Cloud
 
-Repositorio de referencia técnica y codelabs prácticos sobre **diseño de arquitecturas de datos, modelado analítico, formatos de almacenamiento y optimización en Google Cloud Platform (GCP)**.
+Repositorio de referencia técnica y codelabs prácticos sobre **diseño de arquitecturas de datos, modelado analítico, formatos de almacenamiento, bases de datos NoSQL/grafos, ELT programático y gobierno de datos en Google Cloud Platform (GCP)**.
 
 Cada módulo combina **fundamentos arquitectónicos de nivel enterprise** (guías teóricas con diagramas y matrices de decisión) y **laboratorios prácticos autónomos** diseñados para ejecutarse paso a paso midiendo costos, latencias y rendimiento real.
 
@@ -96,6 +96,7 @@ flowchart LR
    - Bloques ```sql```: En el editor de consultas de BigQuery Studio (o Dataform).
    - Bloques ```cypher```: En el editor de consultas de Neo4j Workspace / Browser.
    - Bloques ```bash```: En Cloud Shell o tu terminal local configurada.
+   - Pasos de consola sin bloque de código (Dataform, Knowledge Catalog, Looker Studio): sigue la ruta de navegación exacta que indica el texto (ej. "Knowledge Catalog → Glossaries → Create Business Glossary").
 5. **Compara y valida:** Observa las métricas reales de ejecución (bytes escaneados, slots consumidos, planes de ejecución, visualización de grafos).
 6. **🧹 Paso de Limpieza (Cleanup):** Al finalizar cada lab, ejecuta siempre la sección de limpieza para evitar costos residuales por recursos encendidos.
 
