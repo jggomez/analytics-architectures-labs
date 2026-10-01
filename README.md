@@ -17,6 +17,7 @@ Cada módulo combina **fundamentos arquitectónicos de nivel enterprise** (guía
 | **[05. ELT con Dataflow e Iceberg](05-elt-dataflow-iceberg/)** | 📖 [Teoría](05-elt-dataflow-iceberg/teoria.md)<br>🛠️ [Laboratorio](05-elt-dataflow-iceberg/lab.md) | ELT programático con Apache Beam, CDC vía Datastream hacia Cloud Storage y Bronze/Silver Iceberg | Cloud SQL (PostgreSQL), Datastream, Cloud Storage, Apache Beam / Dataflow, BigQuery (tablas Iceberg gestionadas + datamart nativo), Looker Studio | **Teoría:** Modelo de programación de Beam (PCollection, ParDo, GroupByKey), Dataflow como servicio gestionado, CDC de Datastream como archivos Avro anidados, por qué escribir Iceberg vía BigQuery en vez del conector nativo `IcebergIO`.<br>**Lab (taller de 2h):** Stream de Datastream Cloud SQL→GCS, tres jobs de Dataflow (Bronze → Silver con deduplicación de CDC → Gold) que terminan en un datamart `fact_sales`/`dim_customer`/`dim_product` en BigQuery. |
 | **[06. Data Mesh y Data Fabric con Knowledge Catalog](06-knowledge-catalog-mesh-fabric/)** | 📖 [Teoría](06-knowledge-catalog-mesh-fabric/teoria.md)<br>🛠️ [Laboratorio](06-knowledge-catalog-mesh-fabric/lab.md) | Gobierno de datos federado: Data Mesh (organizacional) vs. Data Fabric (tecnológico), catálogo/diccionario/linaje y seguridad de columnas con Knowledge Catalog | Knowledge Catalog (antes Dataplex Universal Catalog / Data Catalog), BigQuery (Policy Tags, Data Masking, Data Lineage API) | **Teoría:** Los 4 principios de Data Mesh, capas de un Data Fabric, marcos de gobernanza (catálogo/diccionario/linaje, OpenLineage, Amundsen/DataHub), cifrado y enmascaramiento, matriz de decisión.<br>**Lab (taller de 90 min):** Glosario federado, Aspect Type como contrato de gobernanza, Data Product publicado, búsqueda cruzando dominios, clasificación + enmascaramiento dinámico (Hash SHA-256) de una columna sensible, y linaje automático entre dominios — costo $0. |
 | **[07. MLOps: Ciclo de Vida de ML](07-mlops-ciclo-de-vida-ml/)** | 📖 [Teoría](07-mlops-ciclo-de-vida-ml/teoria.md)<br>🛠️ [Laboratorio](07-mlops-ciclo-de-vida-ml/lab.md) | Infraestructura para el ciclo de vida de ML: Feature Store, Model Registry, Endpoints, reentrenamiento continuo y drift | Gemini Enterprise Agent Platform (antes Vertex AI): Feature Store, Model Registry, Endpoints, Pipelines (Kubeflow); BigQuery ML | **Teoría:** Niveles de madurez MLOps, training-serving skew, data drift vs. concept drift, PSI, estrategias de reentrenamiento y champion/challenger.<br>**Lab (taller de ~2h):** Features Silver registradas en el Feature Store, modelo BigQuery ML versionado en el Model Registry, endpoint online, y un pipeline KFP (manual o con cron) que detecta drift, reentrena y solo despliega si el challenger le gana al champion. |
+| **[08. LLMOps: RAG y Agentes](08-llmops-rag-agentes/)** | 📖 [Teoría](08-llmops-rag-agentes/teoria.md)<br>🛠️ [Laboratorio](08-llmops-rag-agentes/lab.md) | Cómo los datos analíticos habilitan la IA generativa: embeddings, bases vectoriales, RAG, agentes y LLMOps | BigQuery (`AI.GENERATE_EMBEDDING`, `VECTOR_SEARCH`, `AI.GENERATE_TEXT`), Gemini, Agent Development Kit (ADK) | **Teoría:** Embeddings y búsqueda vectorial (exacta vs. ANN), chunking, bases vectoriales en GCP, RAG vs. fine-tuning, MLOps vs. LLMOps, ciclo de vida de modelos base, agentes (MCP, A2A) y seguridad (prompt injection).<br>**Lab (taller de ~2h):** RAG en SQL puro sobre un manual de políticas, agente ADK con herramientas sobre documentos y tablas Gold, evaluación con preguntas doradas (recall@3 + LLM-juez) y observabilidad de tokens/latencia en BigQuery. |
 
 ---
 
@@ -50,9 +51,13 @@ analytics-architectures-labs/
 │   ├── teoria.md                      ← Marco conceptual: Data Mesh, Data Fabric, linaje, enmascaramiento, Knowledge Catalog
 │   └── lab.md                         ← Codelab (taller 90 min): Glosario, Aspect Types, Data Product, Policy Tags, linaje
 │
-└── 07-mlops-ciclo-de-vida-ml/
-    ├── teoria.md                      ← Marco conceptual: MLOps, Feature Store, Model Registry, Endpoints, drift, PSI
-    └── lab.md                         ← Codelab (taller 2h): BigQuery ML + Model Registry + Endpoint + pipeline KFP de reentrenamiento
+├── 07-mlops-ciclo-de-vida-ml/
+│   ├── teoria.md                      ← Marco conceptual: MLOps, Feature Store, Model Registry, Endpoints, drift, PSI
+│   └── lab.md                         ← Codelab (taller 2h): BigQuery ML + Model Registry + Endpoint + pipeline KFP de reentrenamiento
+│
+└── 08-llmops-rag-agentes/
+    ├── teoria.md                      ← Marco conceptual: embeddings, bases vectoriales, RAG, agentes, LLMOps, seguridad
+    └── lab.md                         ← Codelab (taller 2h): RAG en BigQuery + agente ADK + evaluación y observabilidad
 ```
 
 ---
@@ -67,6 +72,7 @@ flowchart LR
     D --> E["05. ELT con Dataflow\n(Beam + CDC a GCS + Iceberg)"]
     E --> F["06. Mesh & Fabric\n(Knowledge Catalog)"]
     F --> G["07. MLOps\n(Feature Store + Registry + Drift)"]
+    G --> H["08. LLMOps\n(RAG + Agentes + Evaluación)"]
 ```
 
 1. **Módulo 01:** Comienza entendiendo los paradigmas de ingesta e integración moderna (ELT, CDC) y cómo estructurar el almacenamiento en capas Medallion organizando un bus dimensional con Dataform.
@@ -75,13 +81,14 @@ flowchart LR
 4. **Módulo 04:** Descubre el paradigma NoSQL orientado a grafos, comprendiendo la arquitectura de *Index-Free Adjacency* para resolver consultas hiperconectadas sin la explosión de `JOIN`s de los modelos relacionales.
 5. **Módulo 05:** Cierra el círculo combinando los tres módulos anteriores: usa Datastream (Módulo 01) para entregar CDC como archivos a un lago de datos, Apache Beam/Dataflow como motor programático de transformación cuando el SQL declarativo no basta, y tablas Iceberg gestionadas en BigQuery (Módulo 03) como el lakehouse abierto donde aterrizan Bronze y Silver antes del datamart Gold.
 6. **Módulo 06:** Da un paso atrás de la implementación técnica y pregunta *quién es dueño de qué*, *cómo se descubre todo* y *quién puede ver qué*: Data Mesh (organizacional) y Data Fabric (tecnológico) como los dos paradigmas que resuelven el gobierno de datos cuando ya no hay un solo equipo central, más el linaje como tercer pilar de gobernanza y la seguridad a nivel de columna (Policy Tags + enmascaramiento dinámico) como la pieza de control de acceso — todo con Knowledge Catalog como la pieza concreta de Google Cloud. Es independiente de los módulos anteriores.
-7. **Módulo 07:** Cierra el recorrido llevando el dato Silver a un modelo en producción que se mantiene sano solo: Feature Store, Model Registry, Endpoint y un pipeline de Kubeflow que detecta drift, reentrena con BigQuery ML y solo despliega si el modelo nuevo es mejor. Es independiente de los módulos anteriores (genera sus propios datos), pero reutiliza la narrativa FinTechCo del Módulo 01.
+7. **Módulo 07:** Lleva el dato Silver a un modelo en producción que se mantiene sano solo: Feature Store, Model Registry, Endpoint y un pipeline de Kubeflow que detecta drift, reentrena con BigQuery ML y solo despliega si el modelo nuevo es mejor. Es independiente de los módulos anteriores (genera sus propios datos), pero reutiliza la narrativa FinTechCo del Módulo 01.
+8. **Módulo 08:** Cierra el recorrido mostrando que todo lo anterior es lo que necesita la IA generativa para no inventar: BigQuery como base de datos vectorial, RAG en SQL, un agente con ADK que combina documentos y tablas Gold, y las prácticas de LLMOps para medirlo (set dorado, LLM-juez) y observarlo (tokens, latencia, costo por pregunta). Es independiente de los módulos anteriores.
 
 ---
 
 ## 🚀 Prerrequisitos Generales
 
-- **Cuenta de Google Cloud** con facturación habilitada y un proyecto activo (para Módulos 01, 02, 03, 05, 06 y 07).
+- **Cuenta de Google Cloud** con facturación habilitada y un proyecto activo (para Módulos 01, 02, 03, 05, 06, 07 y 08).
 - **Google Cloud SDK (`gcloud`)** instalado y autenticado:
   ```bash
   gcloud auth login
@@ -124,6 +131,7 @@ Los laboratorios están diseñados para aprovechar al máximo el **GCP Free Tier
 | **Cargas hacia tablas Iceberg gestionadas (Módulo 05)** | `LOAD JOB`/mantenimiento en `bronze`/`silver` | ⚠️ **No cubierto por la capa gratuita de BigQuery.** Se factura con slots Enterprise pay-as-you-go, a diferencia de las cargas a tablas nativas. |
 | **Knowledge Catalog (Módulo 06)** | Glosario, Aspect Types, Data Products, búsqueda, Policy Tags/enmascaramiento, linaje | ✅ Sin costo — organización de metadata, propagación de políticas, búsqueda (incluida en lenguaje natural), taxonomías/enmascaramiento dinámico y linaje automático son gratuitos. ⚠️ Evita "Data Insights" (Gemini, facturado desde el 27-oct-2026) y los *discovery scans* automáticos. |
 | **Endpoint de predicción online (Módulo 07)** | 1 nodo `n1-standard-2` mientras haya un modelo desplegado | ⚠️ **No es gratuito y factura por hora aunque no reciba tráfico.** Es el costo dominante del Módulo 07; el paso de limpieza lo borra. Los pipelines y los schedules también cobran por cada ejecución. |
+| **Gemini y embeddings (Módulo 08)** | Llamadas a `gemini-3.5-flash` y `gemini-embedding-001` desde BigQuery y desde el agente | ⚠️ **Costo variable por uso (tokens), no por hora.** Para el volumen del taller son centavos; el agente corre localmente en Cloud Shell, sin infraestructura desplegada. |
 
 ---
 
@@ -136,6 +144,7 @@ Los laboratorios están diseñados para aprovechar al máximo el **GCP Free Tier
   - **Módulo 05:** Utiliza la región `us-central1` para Cloud SQL, Datastream, Dataflow y los datasets de BigQuery (deben coincidir para minimizar latencia y evitar cargos de transferencia entre regiones).
   - **Módulo 06:** Utiliza la región `us-central1` para los datasets de BigQuery, el glosario, los Aspect Types y el Data Product (los activos de un Data Product deben estar en la misma región que el producto).
   - **Módulo 07:** Utiliza la región `us-central1` para los datasets de BigQuery, el Feature Store, el Model Registry, el endpoint y los pipelines.
+  - **Módulo 08:** Utiliza la multi-región `US` para los datasets de BigQuery (es donde `gemini-3.5-flash` está GA para las funciones de IA de BigQuery) y la ubicación `global` para el agente ADK.
 - **Seguridad:** Los nombres de usuario, contraseñas e IPs en los laboratorios son estrictamente ilustrativos; nunca uses credenciales reales en texto plano ni abras firewalls a `0.0.0.0/0` fuera de entornos de laboratorio aislados.
 
 ---
