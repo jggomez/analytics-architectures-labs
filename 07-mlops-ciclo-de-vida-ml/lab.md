@@ -1,0 +1,770 @@
+# Lab 07 — MLOps en GCP: Feature Store, Model Registry, Endpoints y Reentrenamiento por Drift
+
+> 📖 **Marco Teórico:** Consulta la [Guía de MLOps y Ciclo de Vida de ML](teoria.md) para entender los niveles de madurez de MLOps, data drift vs. concept drift, y qué problema resuelve cada pieza (Feature Store, Model Registry, Endpoints, Pipelines).
+>
+> Este lab es independiente: genera sus propios datos y no requiere haber completado los Módulos 01-06. Usa la narrativa de **FinTechCo** (solicitudes de crédito) del [Módulo 01](../01-patrones-y-modelado/lab.md).
+
+---
+
+## Codelab — Taller de ~2 horas: "FinTechCo, del dato Silver al modelo que se cuida solo"
+
+**FinTechCo** quiere predecir qué solicitudes de crédito van a caer en impago. En este taller vas a llevar ese modelo **de la capa Silver a producción**, y después vas a construir el mecanismo que lo mantiene sano solo: un pipeline que detecta cuándo cambiaron los datos (*drift*), reentrena, compara el modelo nuevo contra el que está en producción, y **solo despliega si el nuevo es mejor**.
+
+```
+ARQUITECTURA DEL LABORATORIO — FINTECHCO MLOPS
+
+  BigQuery: fintech_silver.solicitudes_historicas
+                 │
+                 ├──► Feature Store (Feature Group, offline)
+                 │      registro y descubrimiento de features
+                 ▼
+  BigQuery ML: CREATE MODEL ... model_registry='VERTEX_AI'
+                 │
+                 ▼
+  Model Registry: fintech_credit_risk  (v1, v2, ...)
+                 │
+                 ▼
+  Endpoint: fintech-credit-endpoint  ◄──── predicciones online
+                 ▲
+                 │ despliega solo si el challenger gana
+  ┌──────────────┴─────────────────────────────────────────┐
+  │ PIPELINE DE REENTRENAMIENTO (Kubeflow Pipelines)        │
+  │  1. PSI (drift) ─► ¿> 0.2? ─► 2. reentrenar (BQML)       │
+  │  3. AUC challenger vs. champion ─► ¿gana? ─► 4. deploy   │
+  │  Ejecución manual  o  programada con cron                │
+  └─────────────────────────────────────────────────────────┘
+```
+
+> [!IMPORTANT]
+> **Vertex AI cambió de nombre.** El 22 de abril de 2026, Google lo renombró a **Gemini Enterprise Agent Platform**. Feature Store, Model Registry, Endpoints, Pipelines y Model Monitoring siguen existiendo, ahora agrupados bajo el submenú **Models** de la plataforma en la consola. Pero la API (`aiplatform.googleapis.com`), el SDK de Python (`google-cloud-aiplatform`), el grupo de comandos `gcloud ai` y los roles IAM (`roles/aiplatform.*`) **conservan sus nombres**. Por eso en este lab verás "aiplatform" en el código aunque la consola diga "Agent Platform". Detalles en [teoría §2](teoria.md#2-el-nombre-de-vertex-ai-a-gemini-enterprise-agent-platform).
+
+---
+
+### Objetivos
+
+Al terminar este laboratorio serás capaz de:
+
+1. Registrar features de una tabla Silver de BigQuery en el **Feature Store** (offline) para que sean descubribles y reutilizables.
+2. Entrenar un modelo con **BigQuery ML** y registrarlo automáticamente en el **Model Registry** con versiones.
+3. Desplegar el modelo en un **Endpoint** y obtener predicciones online.
+4. Medir **data drift** con el *Population Stability Index* (PSI) usando SQL.
+5. Construir un **pipeline de Kubeflow (KFP)** con *quality gates*: reentrena solo si hay drift y despliega solo si el modelo nuevo supera al actual.
+6. Ejecutar ese pipeline **manualmente** y **programarlo con cron**.
+
+### Prerrequisitos
+
+- Proyecto de Google Cloud con facturación habilitada (idealmente un proyecto nuevo para este lab).
+- **Todo se ejecuta en Google Cloud Shell**, más la consola web para observar el Model Registry, el endpoint y el pipeline.
+- Rol de **Owner** en el proyecto. Es lo más simple para el taller, porque vas a otorgar roles a una cuenta de servicio.
+- Conocimientos básicos de SQL y Python. No necesitas experiencia previa en ML: el modelo es una regresión logística entrenada con SQL.
+
+### Costo Estimado (FinOps)
+
+| Concepto | Recurso en el Lab | ¿Cubierto por capa gratuita? | Estimado |
+|---|---|---|---|
+| **BigQuery ML** (entrenamientos) | 2-3 `CREATE MODEL` sobre unos miles de filas | ✅ Sí (el free tier incluye 10 GiB/mes de `CREATE MODEL`) | **~$0.00** |
+| **BigQuery** (datos y consultas) | Tablas de pocos MB, consultas de PSI | ✅ Sí | **~$0.00** |
+| **Feature Store** (solo offline) | Feature Group sobre una tabla BigQuery, sin online store | Sin nodos de serving (los datos viven en BigQuery) | **~$0.00** |
+| **Endpoint** (predicción online) | 1 nodo `n1-standard-2` desplegado ~1-1.5 h | ❌ No: se factura **por hora mientras el modelo esté desplegado** | **~$0.15–0.30** |
+| **Pipelines** | 2-3 ejecuciones del pipeline | ❌ No: cargo pequeño por ejecución más el cómputo de cada componente | **~$0.10–0.30** |
+| **Cloud Storage** | Artefactos del pipeline | ✅ Sí | **~$0.00** |
+
+> [!WARNING]
+> **El endpoint es el recurso caro de este lab, y sigue facturando aunque nadie le envíe predicciones.** Un endpoint con un modelo desplegado tiene al menos un nodo encendido 24/7. El Paso 9 (Limpieza) no es opcional. Revisa los precios vigentes de predicción online en la página de precios de Agent Platform antes de empezar, porque cambian según el tipo de máquina y la región.
+
+---
+
+### Mapa del Laboratorio (~120 minutos)
+
+```
+Paso 0  (10 min)  Entorno: variables, APIs, bucket, datasets, permisos, Python
+Paso 1  (10 min)  Datos: generar la capa Silver sintética (historia de 5000 solicitudes)
+Paso 2  (10 min)  Feature Store: registrar las features (offline)
+Paso 3  (10 min)  BigQuery ML: entrenar v1 y registrarla en el Model Registry
+Paso 4  (20 min)  Endpoint: desplegar v1 y predecir online
+Paso 5  (10 min)  Drift: generar un lote "sano" y uno "con drift" y compararlos
+Paso 6  (15 min)  Pipeline: construirlo y correrlo con el lote sano (no debe reentrenar)
+Paso 7  (25 min)  Pipeline con el lote con drift: reentrena, compara y despliega v2
+Paso 8  (5 min)   Programar el pipeline con cron
+Paso 9  (10 min)  Limpieza + Retos Opcionales
+```
+
+---
+
+## Paso 0 — Preparar el Entorno (10 min)
+
+### 0.1. Variables, APIs, bucket y datasets
+
+```bash
+export PROJECT_ID=$(gcloud config get-value project)
+export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+export REGION=us-central1
+export BUCKET="gs://${PROJECT_ID}-lab07"
+
+gcloud services enable \
+  aiplatform.googleapis.com \
+  bigquery.googleapis.com \
+  bigquerystorage.googleapis.com \
+  compute.googleapis.com \
+  storage.googleapis.com
+
+gcloud storage buckets create "$BUCKET" --location="$REGION"
+
+bq --location="$REGION" mk --dataset --description "FinTechCo - Capa Silver (features)" "${PROJECT_ID}:fintech_silver"
+bq --location="$REGION" mk --dataset --description "FinTechCo - Modelos BigQuery ML" "${PROJECT_ID}:fintech_ml"
+```
+
+### 0.2. Permisos para la cuenta de servicio que ejecuta el pipeline
+
+Los pipelines corren con la **cuenta de servicio de Compute Engine por defecto**, salvo que indiques otra. Esa cuenta va a entrenar modelos en BigQuery, registrarlos en el Model Registry y desplegarlos en el endpoint, así que necesita permisos explícitos:
+
+```bash
+SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+for ROLE in roles/aiplatform.admin roles/bigquery.admin roles/storage.objectAdmin; do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${SA}" --role="$ROLE" --condition=None --quiet > /dev/null
+  echo "Otorgado $ROLE a $SA"
+done
+```
+
+> [!NOTE]
+> En proyectos creados desde 2024, la cuenta de servicio de Compute Engine por defecto **ya no recibe el rol Editor automáticamente**. Si no le das estos roles a mano, el pipeline falla a mitad de camino con errores de permisos. `roles/aiplatform.admin` es el rol que la documentación de BigQuery ML exige para registrar modelos en el Model Registry. En producción usarías una cuenta de servicio dedicada con permisos mínimos. Aquí priorizamos que el taller funcione.
+
+### 0.3. Entorno Python
+
+Igual que en el [Módulo 05](../05-elt-dataflow-iceberg/lab.md), el entorno virtual va en `/tmp` para no agotar los 5 GB del `$HOME` de Cloud Shell:
+
+```bash
+python3 -m venv /tmp/lab07-venv
+source /tmp/lab07-venv/bin/activate
+pip install --quiet --no-cache-dir \
+  "google-cloud-aiplatform==2.3.0" \
+  "google-cloud-bigquery==3.46.0" \
+  "kfp==2.17.0"
+
+mkdir -p ~/lab07 && cd ~/lab07
+```
+
+> [!IMPORTANT]
+> Todos los pasos siguientes asumen que estás en `~/lab07`, con el entorno virtual activo y las variables del Paso 0.1 exportadas. Si se reinicia Cloud Shell, vuelve a correr los `export` del 0.1 y `source /tmp/lab07-venv/bin/activate`. Si la VM de Cloud Shell cambió y `/tmp/lab07-venv` ya no existe, repite el 0.3.
+
+---
+
+## Paso 1 — Datos: la Capa Silver (10 min)
+
+En un caso real, esta tabla saldría del pipeline Silver de los Módulos 01 o 05. Aquí la **generamos sintéticamente** por una razón pedagógica: necesitamos poder **inyectar drift a propósito** en el Paso 5. En un taller de 2 horas no podemos esperar meses a que los datos cambien solos.
+
+El generador tiene tres perfiles: `historico` (los datos de entrenamiento), `sano` (un lote nuevo con la misma distribución) y `drift` (un lote nuevo donde cambiaron tanto los datos como la relación entre los datos y el impago).
+
+```bash
+cat <<'EOF' > generar_lote.py
+"""Genera un lote sintético de solicitudes de crédito en fintech_silver.
+
+Perfiles:
+  historico -> 5000 filas, distribución "normal" (datos de entrenamiento de v1)
+  sano      -> 2000 filas, misma distribución (no debería disparar drift)
+  drift     -> 3000 filas: ingresos 35% más bajos, más endeudamiento (data drift)
+               y el plazo pasa a pesar más que el score en el impago (concept drift)
+"""
+import argparse
+import os
+
+from google.cloud import bigquery
+
+PERFILES = {
+    "historico": dict(tabla="solicitudes_historicas", n=5000, factor_ingreso=1.0, delta_ratio=0.0,
+                      intercepto=-3.0, coef_score=-0.006, coef_plazo=0.01,
+                      ts="TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL CAST(365 * RAND() AS INT64) DAY)"),
+    "sano": dict(tabla="solicitudes_lote_sano", n=2000, factor_ingreso=1.0, delta_ratio=0.0,
+                 intercepto=-3.0, coef_score=-0.006, coef_plazo=0.01, ts="CURRENT_TIMESTAMP()"),
+    "drift": dict(tabla="solicitudes_lote_drift", n=3000, factor_ingreso=0.65, delta_ratio=0.15,
+                  intercepto=-5.0, coef_score=-0.001, coef_plazo=0.08, ts="CURRENT_TIMESTAMP()"),
+}
+
+SQL = """
+CREATE OR REPLACE TABLE `{project}.fintech_silver.{tabla}` AS
+WITH base AS (
+  SELECT
+    FORMAT('{prefijo}-%06d', n) AS solicitud_id,
+    ROUND((2.0 + 6.0 * RAND() + 2.0 * RAND()) * {factor_ingreso}, 2) AS ingreso_mensual_m,
+    ROUND(LEAST(0.95, 0.05 + 0.6 * RAND() + {delta_ratio}), 3) AS ratio_deuda_ingreso,
+    CAST(450 + 400 * RAND() AS INT64) AS score_crediticio,
+    12 * CAST(1 + FLOOR(4 * RAND()) AS INT64) AS plazo_meses,
+    {ts} AS feature_timestamp,
+    RAND() AS u
+  FROM UNNEST(GENERATE_ARRAY(1, {n})) AS n
+)
+SELECT
+  * EXCEPT (u),
+  -- "Verdad oculta" del generador: probabilidad logística de impago
+  u < 1 / (1 + EXP(-({intercepto}
+        + 4.0 * ratio_deuda_ingreso
+        + {coef_score} * (score_crediticio - 650)
+        - 0.15 * (ingreso_mensual_m - 6)
+        + {coef_plazo} * plazo_meses))) AS incumplio
+FROM base
+"""
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--perfil", choices=PERFILES, required=True)
+    args = parser.parse_args()
+
+    p = PERFILES[args.perfil]
+    project = os.environ["PROJECT_ID"]
+    client = bigquery.Client(project=project, location=os.environ["REGION"])
+    client.query(SQL.format(project=project, prefijo=args.perfil.upper(), **p)).result()
+
+    resumen = list(client.query(f"""
+      SELECT COUNT(*) AS filas, ROUND(AVG(ingreso_mensual_m), 2) AS ingreso_prom,
+             ROUND(AVG(ratio_deuda_ingreso), 3) AS ratio_prom,
+             ROUND(AVG(CAST(incumplio AS INT64)), 3) AS tasa_impago
+      FROM `{project}.fintech_silver.{p['tabla']}`""").result())[0]
+    print(f"{p['tabla']}: {dict(resumen.items())}")
+EOF
+
+python3 generar_lote.py --perfil historico
+```
+
+Deberías ver unas 5000 filas, ingreso promedio ~6 (millones), y una tasa de impago cercana al 25%.
+
+> [!NOTE]
+> La columna `incumplio` es la **etiqueta** (*label*): lo que el modelo aprende a predecir. En la vida real esta etiqueta llega **con retraso**: sabes si alguien cayó en impago meses después de aprobarle el crédito. Esta es la razón de fondo por la que el *concept drift* es más difícil de detectar que el *data drift* (ver [teoría §5](teoria.md#5-drift-por-qué-los-modelos-se-degradan-solos)).
+
+---
+
+## Paso 2 — Feature Store: Registrar las Features (10 min)
+
+El **Feature Store** de la plataforma no copia tus datos a otro lado. Registra una tabla o vista de BigQuery como **Feature Group** y declara cuáles de sus columnas son features. El *offline store* **es** BigQuery. Lo que ganas es un catálogo central de features con dueño y descripción, del que entrenamiento y serving leen la **misma definición** (ver [teoría §3.1](teoria.md#31-feature-store-una-sola-definición-para-entrenar-y-servir)).
+
+```bash
+cat <<'EOF' > registrar_features.py
+"""Registra la tabla Silver como Feature Group (Feature Store, solo offline)."""
+import os
+
+from google.cloud import aiplatform
+from vertexai.resources.preview import feature_store
+
+PROJECT_ID = os.environ["PROJECT_ID"]
+REGION = os.environ["REGION"]
+aiplatform.init(project=PROJECT_ID, location=REGION)
+
+grupo = feature_store.FeatureGroup.create(
+    name="fintech_solicitudes",
+    source=feature_store.FeatureGroupBigQuerySource(
+        uri=f"bq://{PROJECT_ID}.fintech_silver.solicitudes_historicas",
+        entity_id_columns=["solicitud_id"],
+    ),
+    description="Features de riesgo de crédito de FinTechCo (capa Silver)",
+)
+
+FEATURES = {
+    "ingreso_mensual_m": "Ingreso mensual del solicitante, en millones",
+    "ratio_deuda_ingreso": "Deuda total / ingreso mensual",
+    "score_crediticio": "Score de buró (450-850)",
+    "plazo_meses": "Plazo solicitado en meses",
+}
+for nombre, descripcion in FEATURES.items():
+    grupo.create_feature(name=nombre, description=descripcion)
+    print(f"Feature registrada: {nombre}")
+
+print(f"Feature Group listo: {grupo.resource_name}")
+EOF
+
+python3 registrar_features.py
+```
+
+Verifícalo en la consola: **Agent Platform → Models → Feature Store → Feature Registry**. Deberías ver el grupo `fintech_solicitudes` con sus 4 features.
+
+> [!NOTE]
+> Fíjate en el import: `from vertexai.resources.preview import feature_store`. Esta API del SDK está en el módulo `preview`, lo que significa que puede cambiar entre versiones del SDK. Por eso el Paso 0.3 fija `google-cloud-aiplatform==2.3.0`, la versión con la que se verificó este lab.
+
+---
+
+## Paso 3 — BigQuery ML: Entrenar v1 y Registrarla (10 min)
+
+Ejecuta en el editor de BigQuery (o con `bq query --use_legacy_sql=false`):
+
+```sql
+CREATE OR REPLACE MODEL `fintech_ml.credit_model_v1`
+OPTIONS (
+  model_type = 'LOGISTIC_REG',
+  input_label_cols = ['incumplio'],
+  model_registry = 'VERTEX_AI',
+  vertex_ai_model_id = 'fintech_credit_risk',
+  vertex_ai_model_version_aliases = ['v1']
+) AS
+SELECT ingreso_mensual_m, ratio_deuda_ingreso, score_crediticio, plazo_meses, incumplio
+FROM `fintech_silver.solicitudes_historicas`;
+```
+
+Tres opciones hacen el trabajo de MLOps:
+- `model_registry = 'VERTEX_AI'` registra el modelo en el **Model Registry** automáticamente al terminar el entrenamiento.
+- `vertex_ai_model_id = 'fintech_credit_risk'` es el **nombre del modelo en el registry**. Todos los modelos futuros que usen este mismo ID (con un nombre BigQuery ML distinto) se registran como **versiones nuevas** del mismo modelo. Así va a crear el pipeline la v2.
+- `vertex_ai_model_version_aliases = ['v1']` le pone un alias legible a esta versión, que usaremos para desplegarla.
+
+> [!WARNING]
+> Si vuelves a ejecutar `CREATE OR REPLACE MODEL` **con el mismo nombre BigQuery ML** (`credit_model_v1`), BigQuery **reemplaza** la versión existente en el registry en vez de crear una nueva. Para tener v1, v2, v3... cada versión necesita un nombre BigQuery ML distinto con el mismo `vertex_ai_model_id`. El pipeline del Paso 6 lo hace usando el ID de la ejecución en el nombre.
+
+Evalúa el modelo:
+
+```sql
+SELECT precision, recall, accuracy, roc_auc
+FROM ML.EVALUATE(MODEL `fintech_ml.credit_model_v1`);
+```
+
+Verifícalo en la consola: **Agent Platform → Models → Model Registry** → `fintech_credit_risk` → versión 1 con el alias `v1`.
+
+---
+
+## Paso 4 — Endpoint: Desplegar v1 y Predecir (20 min)
+
+```bash
+cat <<'EOF' > desplegar_v1.py
+"""Crea el endpoint y despliega la versión v1 del modelo (alias 'v1' del Model Registry)."""
+import os
+
+from google.cloud import aiplatform
+
+aiplatform.init(project=os.environ["PROJECT_ID"], location=os.environ["REGION"])
+
+endpoint = aiplatform.Endpoint.create(display_name="fintech-credit-endpoint")
+modelo = aiplatform.Model(model_name="fintech_credit_risk@v1")
+
+modelo.deploy(
+    endpoint=endpoint,
+    machine_type="n1-standard-2",
+    min_replica_count=1,
+    max_replica_count=1,
+    traffic_percentage=100,  # el default del SDK es 0: sin esto, el modelo no recibe tráfico
+)
+print(f"Endpoint listo: {endpoint.resource_name}")
+EOF
+
+python3 desplegar_v1.py
+```
+
+> [!NOTE]
+> **El despliegue tarda entre 10 y 20 minutos**: la plataforma aprovisiona la máquina y carga el modelo. Mientras esperas, lee la [teoría §3](teoria.md#3-las-piezas-del-ciclo-de-vida) o adelanta el Paso 5 en otra pestaña de Cloud Shell. Un modelo de BigQuery ML registrado se despliega **sin contenedor propio**: la plataforma se encarga de servirlo.
+
+Cuando termine, envía dos solicitudes de prueba, una de bajo riesgo y una de alto riesgo:
+
+```bash
+cat <<'EOF' > predecir.py
+"""Envía dos solicitudes de ejemplo al endpoint y muestra la predicción."""
+import os
+
+from google.cloud import aiplatform
+
+aiplatform.init(project=os.environ["PROJECT_ID"], location=os.environ["REGION"])
+endpoint = aiplatform.Endpoint.list(filter='display_name="fintech-credit-endpoint"')[0]
+
+solicitudes = [
+    {"ingreso_mensual_m": 9.5, "ratio_deuda_ingreso": 0.15, "score_crediticio": 800, "plazo_meses": 12},
+    {"ingreso_mensual_m": 2.5, "ratio_deuda_ingreso": 0.70, "score_crediticio": 480, "plazo_meses": 48},
+]
+respuesta = endpoint.predict(instances=solicitudes)
+print(f"Versión que respondió: {respuesta.model_version_id}")
+for solicitud, prediccion in zip(solicitudes, respuesta.predictions):
+    print(solicitud, "->", prediccion)
+EOF
+
+python3 predecir.py
+```
+
+Cada predicción trae la clase predicha y la probabilidad de cada clase. La primera solicitud debería salir con baja probabilidad de impago y la segunda con alta. Fíjate en la línea `Versión que respondió`: ahora es la `1`. La vas a volver a revisar en el Paso 7.
+
+---
+
+## Paso 5 — Drift: Lotes Nuevos (10 min)
+
+Pasa el tiempo y llegan solicitudes nuevas. Generamos dos escenarios:
+
+```bash
+python3 generar_lote.py --perfil sano
+python3 generar_lote.py --perfil drift
+```
+
+Compara los promedios en BigQuery:
+
+```sql
+SELECT 'historico' AS lote, AVG(ingreso_mensual_m) AS ingreso, AVG(ratio_deuda_ingreso) AS ratio,
+       AVG(CAST(incumplio AS INT64)) AS tasa_impago FROM `fintech_silver.solicitudes_historicas`
+UNION ALL
+SELECT 'sano', AVG(ingreso_mensual_m), AVG(ratio_deuda_ingreso), AVG(CAST(incumplio AS INT64))
+FROM `fintech_silver.solicitudes_lote_sano`
+UNION ALL
+SELECT 'drift', AVG(ingreso_mensual_m), AVG(ratio_deuda_ingreso), AVG(CAST(incumplio AS INT64))
+FROM `fintech_silver.solicitudes_lote_drift`;
+```
+
+El lote `sano` se parece al histórico. El lote `drift` simula una crisis económica: ingresos más bajos, más endeudamiento y mucho más impago. Además, en el lote con drift **cambió la relación** entre las features y el impago: el plazo ahora pesa mucho más y el score casi nada. Eso es *concept drift*, y es lo que hace que el modelo v1 se equivoque más aunque sus entradas sigan siendo válidas.
+
+---
+
+## Paso 6 — Pipeline de Reentrenamiento: Construirlo y Correrlo con el Lote Sano (15 min)
+
+El pipeline usa **Kubeflow Pipelines (KFP)**. Escribes el flujo en Python con el SDK de KFP, y la plataforma lo ejecuta de forma **serverless**: no hay que administrar ningún cluster de Kubernetes. Cada `@dsl.component` corre en su propio contenedor. `dsl.If` crea las ramas condicionales que funcionan como *quality gates*.
+
+```bash
+cat <<'EOF' > pipeline.py
+"""Pipeline de reentrenamiento continuo: detecta drift (PSI), reentrena con BigQuery ML,
+compara challenger vs. champion y solo despliega si el nuevo modelo es mejor."""
+from kfp import dsl
+
+PKGS_BQ = ["google-cloud-bigquery==3.46.0"]
+PKGS_AIP = ["google-cloud-aiplatform==2.3.0"]
+
+
+@dsl.component(base_image="python:3.11", packages_to_install=PKGS_BQ)
+def calcular_psi(project: str, location: str, tabla_base: str, tabla_actual: str) -> float:
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project, location=location)
+    sql_psi = """
+    WITH q AS (
+      SELECT APPROX_QUANTILES({f}, 10) AS qs FROM `{base}`
+    ),
+    cortes AS (
+      SELECT ARRAY(
+        SELECT DISTINCT x FROM UNNEST(qs) AS x WITH OFFSET o
+        WHERE o BETWEEN 1 AND 9 ORDER BY x) AS c
+      FROM q
+    ),
+    dist_base AS (
+      SELECT RANGE_BUCKET(t.{f}, cortes.c) AS bin, COUNT(*) / SUM(COUNT(*)) OVER () AS p
+      FROM `{base}` t CROSS JOIN cortes GROUP BY bin
+    ),
+    dist_actual AS (
+      SELECT RANGE_BUCKET(t.{f}, cortes.c) AS bin, COUNT(*) / SUM(COUNT(*)) OVER () AS p
+      FROM `{actual}` t CROSS JOIN cortes GROUP BY bin
+    )
+    SELECT SUM(
+      (IFNULL(a.p, 0.0001) - IFNULL(b.p, 0.0001)) * LN(IFNULL(a.p, 0.0001) / IFNULL(b.p, 0.0001))
+    ) AS psi
+    FROM dist_base b FULL OUTER JOIN dist_actual a USING (bin)
+    """
+    psi_max = 0.0
+    for f in ["ingreso_mensual_m", "ratio_deuda_ingreso", "score_crediticio", "plazo_meses"]:
+        fila = list(client.query(sql_psi.format(f=f, base=tabla_base, actual=tabla_actual)).result())[0]
+        print(f"PSI {f}: {fila.psi:.4f}")
+        psi_max = max(psi_max, fila.psi)
+    print(f"PSI maximo: {psi_max:.4f}")
+    return psi_max
+
+
+@dsl.component(base_image="python:3.11", packages_to_install=PKGS_BQ)
+def reentrenar(project: str, location: str, tabla_actual: str, vertex_model_id: str,
+               run_id: str) -> str:
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project, location=location)
+    modelo = f"{project}.fintech_ml.credit_model_{run_id.replace('-', '_')}"
+    # Ventana deslizante: se entrena solo con el lote reciente (80% de las filas);
+    # el 20% restante (FARM_FINGERPRINT mod 5 = 0) se reserva para evaluar.
+    client.query(f"""
+    CREATE OR REPLACE MODEL `{modelo}`
+    OPTIONS (
+      model_type = 'LOGISTIC_REG',
+      input_label_cols = ['incumplio'],
+      model_registry = 'VERTEX_AI',
+      vertex_ai_model_id = '{vertex_model_id}'
+    ) AS
+    SELECT ingreso_mensual_m, ratio_deuda_ingreso, score_crediticio, plazo_meses, incumplio
+    FROM `{tabla_actual}`
+    WHERE MOD(ABS(FARM_FINGERPRINT(solicitud_id)), 5) != 0
+    """).result()
+    print(f"Modelo entrenado y registrado: {modelo}")
+    return modelo
+
+
+@dsl.component(base_image="python:3.11", packages_to_install=PKGS_BQ)
+def evaluar_auc(project: str, location: str, modelo: str, tabla_actual: str) -> float:
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project, location=location)
+    fila = list(client.query(f"""
+    SELECT roc_auc FROM ML.EVALUATE(MODEL `{modelo}`, (
+      SELECT ingreso_mensual_m, ratio_deuda_ingreso, score_crediticio, plazo_meses, incumplio
+      FROM `{tabla_actual}`
+      WHERE MOD(ABS(FARM_FINGERPRINT(solicitud_id)), 5) = 0
+    ))
+    """).result())[0]
+    print(f"AUC de {modelo} sobre el holdout del lote actual: {fila.roc_auc:.4f}")
+    return float(fila.roc_auc)
+
+
+@dsl.component(base_image="python:3.11", packages_to_install=PKGS_AIP)
+def desplegar_ultima_version(project: str, location: str, vertex_model_id: str,
+                             endpoint_display_name: str) -> str:
+    from google.cloud import aiplatform
+    from google.cloud.aiplatform import ModelRegistry
+
+    aiplatform.init(project=project, location=location)
+    registry = ModelRegistry(model=vertex_model_id)
+    ultima = max(registry.list_versions(), key=lambda v: int(v.version_id))
+    modelo = registry.get_model(version=ultima.version_id)
+
+    endpoint = aiplatform.Endpoint.list(filter=f'display_name="{endpoint_display_name}"')[0]
+    anteriores = [m.id for m in endpoint.list_models()]
+
+    modelo.deploy(
+        endpoint=endpoint,
+        machine_type="n1-standard-2",
+        min_replica_count=1,
+        max_replica_count=1,
+        traffic_percentage=100,
+    )
+    for deployed_model_id in anteriores:
+        endpoint.undeploy(deployed_model_id=deployed_model_id)
+
+    print(f"Desplegada la versión {ultima.version_id}; retiradas: {anteriores}")
+    return f"{vertex_model_id}@{ultima.version_id}"
+
+
+@dsl.pipeline(name="fintech-reentrenamiento")
+def pipeline(
+    project: str,
+    location: str,
+    tabla_base: str,
+    tabla_actual: str,
+    modelo_champion: str,
+    vertex_model_id: str = "fintech_credit_risk",
+    endpoint_display_name: str = "fintech-credit-endpoint",
+    umbral_psi: float = 0.2,
+):
+    psi = calcular_psi(project=project, location=location,
+                       tabla_base=tabla_base, tabla_actual=tabla_actual)
+    psi.set_display_name("1-calcular-drift-psi")
+
+    with dsl.If(psi.output > umbral_psi, name="hay-drift"):
+        challenger = reentrenar(project=project, location=location, tabla_actual=tabla_actual,
+                                vertex_model_id=vertex_model_id,
+                                run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER)
+        challenger.set_display_name("2-reentrenar-challenger")
+
+        auc_challenger = evaluar_auc(project=project, location=location,
+                                     modelo=challenger.output, tabla_actual=tabla_actual)
+        auc_challenger.set_display_name("3a-auc-challenger")
+
+        auc_champion = evaluar_auc(project=project, location=location,
+                                   modelo=modelo_champion, tabla_actual=tabla_actual)
+        auc_champion.set_display_name("3b-auc-champion")
+
+        with dsl.If(auc_challenger.output > auc_champion.output, name="challenger-gana"):
+            despliegue = desplegar_ultima_version(project=project, location=location,
+                                                  vertex_model_id=vertex_model_id,
+                                                  endpoint_display_name=endpoint_display_name)
+            despliegue.set_display_name("4-desplegar-challenger")
+EOF
+```
+
+Ahora el script que **compila** el pipeline y lo **lanza**, ya sea una sola vez o programado:
+
+```bash
+cat <<'EOF' > ejecutar_pipeline.py
+"""Compila y lanza el pipeline de reentrenamiento (una vez, o programado con cron)."""
+import argparse
+import os
+
+from google.cloud import aiplatform
+from kfp import compiler
+
+from pipeline import pipeline
+
+PROJECT_ID = os.environ["PROJECT_ID"]
+REGION = os.environ["REGION"]
+BUCKET = os.environ["BUCKET"]
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--lote", required=True,
+                    help="Tabla del lote nuevo, ej. solicitudes_lote_sano o solicitudes_lote_drift")
+parser.add_argument("--cron", help="Si se pasa, crea un schedule en vez de una ejecución única")
+args = parser.parse_args()
+
+compiler.Compiler().compile(pipeline, "pipeline.json")
+aiplatform.init(project=PROJECT_ID, location=REGION, staging_bucket=BUCKET)
+
+job = aiplatform.PipelineJob(
+    display_name="fintech-reentrenamiento",
+    template_path="pipeline.json",
+    pipeline_root=f"{BUCKET}/pipeline-root",
+    parameter_values={
+        "project": PROJECT_ID,
+        "location": REGION,
+        "tabla_base": f"{PROJECT_ID}.fintech_silver.solicitudes_historicas",
+        "tabla_actual": f"{PROJECT_ID}.fintech_silver.{args.lote}",
+        "modelo_champion": f"{PROJECT_ID}.fintech_ml.credit_model_v1",
+    },
+    enable_caching=False,  # con caché, una corrida con los mismos parámetros reutilizaría el PSI viejo
+)
+
+if args.cron:
+    schedule = job.create_schedule(display_name="fintech-reentrenamiento-programado",
+                                   cron=args.cron, max_concurrent_run_count=1)
+    print(f"Schedule creado: {schedule.resource_name} (cron: {args.cron})")
+else:
+    job.submit()
+    print(f"Pipeline lanzado: {job._dashboard_uri()}")
+EOF
+```
+
+Lánzalo con el **lote sano**:
+
+```bash
+python3 ejecutar_pipeline.py --lote solicitudes_lote_sano
+```
+
+Abre el enlace que imprime, o ve a **Agent Platform → Models → Pipelines**. La primera ejecución tarda unos minutos más porque cada componente descarga su contenedor y sus paquetes. En el grafo vas a ver:
+
+- `1-calcular-drift-psi` termina con un PSI máximo muy bajo, alrededor de 0.01-0.02. Lo ves en los logs del componente.
+- La rama `hay-drift` aparece **omitida** (*skipped*): el PSI no superó el umbral de 0.2, así que **no se reentrena nada**.
+
+> [!IMPORTANT]
+> Este es el primer *quality gate* funcionando. Un pipeline que reentrena "porque toca, cada lunes" gasta cómputo y arriesga reemplazar un modelo bueno por uno peor sin razón. Este pipeline primero **mide** si el mundo cambió.
+
+---
+
+## Paso 7 — Pipeline con el Lote con Drift (25 min)
+
+```bash
+python3 ejecutar_pipeline.py --lote solicitudes_lote_drift
+```
+
+Ahora sí recorre todo el camino:
+
+1. `1-calcular-drift-psi`: el PSI máximo sale **muy por encima** de 0.2. El ingreso y el ratio de deuda cambiaron de distribución.
+2. `2-reentrenar-challenger`: entrena un modelo nuevo con el lote reciente y lo registra como una **nueva versión** de `fintech_credit_risk`.
+3. `3a`/`3b`: evalúa challenger y champion (v1) sobre **el mismo holdout** del lote nuevo, el 20% de filas que el challenger nunca vio. El challenger debería sacar un AUC claramente mayor: v1 aprendió que el score importa mucho y el plazo poco, y eso dejó de ser cierto.
+4. `4-desplegar-challenger`: despliega la nueva versión en el endpoint y retira la v1. **Tarda 10-20 minutos**, igual que el despliegue del Paso 4.
+
+> [!NOTE]
+> Comparar sobre el mismo holdout es la clave del segundo gate. Si evaluaras al challenger sobre sus propios datos de entrenamiento, siempre "ganaría". Un AUC más alto en datos que el modelo ya vio no demuestra nada.
+
+Cuando termine, vuelve a predecir:
+
+```bash
+python3 predecir.py
+```
+
+La línea `Versión que respondió` ya no dice `1`, sino la versión nueva. En **Model Registry → fintech_credit_risk** vas a ver las dos versiones. Ese historial es tu **auditoría**: qué versión estuvo en producción y desde cuándo.
+
+---
+
+## Paso 8 — Programar el Pipeline con Cron (5 min)
+
+En producción no lanzarías el pipeline a mano. Lo programas:
+
+```bash
+python3 ejecutar_pipeline.py --lote solicitudes_lote_sano --cron "0 6 * * *"
+```
+
+Esto crea un **schedule** que ejecuta el pipeline todos los días a las 6:00 (UTC). Puedes fijar la zona horaria con el prefijo `TZ=`, por ejemplo `"TZ=America/Bogota 0 6 * * *"`. Lo ves en **Agent Platform → Models → Pipelines → Schedules**.
+
+> [!WARNING]
+> El schedule va a seguir lanzando ejecuciones (y cobrándolas) hasta que lo borres. `limpiar.py`, en el Paso 9, lo elimina. En un caso real, el schedule leería "el lote de ayer" con una vista o una tabla particionada por fecha, en vez de una tabla fija como aquí.
+
+---
+
+## Paso 9 — Limpieza (10 min)
+
+> [!IMPORTANT]
+> El endpoint factura por hora mientras tenga un modelo desplegado, y el schedule sigue lanzando ejecuciones. Ejecuta todo este paso antes de cerrar la sesión.
+
+```bash
+cat <<'EOF' > limpiar.py
+"""Borra schedules, endpoint (con sus modelos desplegados), modelos del registry y el Feature Group."""
+import os
+
+from google.cloud import aiplatform
+from vertexai.resources.preview import feature_store
+
+aiplatform.init(project=os.environ["PROJECT_ID"], location=os.environ["REGION"])
+
+for schedule in aiplatform.PipelineJobSchedule.list():
+    print(f"Borrando schedule {schedule.display_name}")
+    schedule.delete()
+
+for endpoint in aiplatform.Endpoint.list(filter='display_name="fintech-credit-endpoint"'):
+    print(f"Borrando endpoint {endpoint.display_name} (y sus modelos desplegados)")
+    endpoint.delete(force=True)
+
+for modelo in aiplatform.Model.list(filter='display_name="fintech_credit_risk"'):
+    print(f"Borrando modelo del registry {modelo.resource_name}")
+    modelo.delete()
+
+try:
+    feature_store.FeatureGroup("fintech_solicitudes").delete(force=True)
+    print("Feature Group borrado")
+except Exception as e:  # puede no existir si saltaste el Paso 2
+    print(f"Feature Group: {e}")
+EOF
+
+python3 limpiar.py
+
+bq rm --recursive --force "${PROJECT_ID}:fintech_ml"
+bq rm --recursive --force "${PROJECT_ID}:fintech_silver"
+gcloud storage rm --recursive "$BUCKET"
+
+deactivate
+```
+
+Verifica en **Agent Platform → Models → Online prediction → Endpoints** que no quede ningún endpoint. Es el recurso que más importa borrar.
+
+> [!NOTE]
+> Si `limpiar.py` reporta que no encontró el modelo en el registry, revisa **Model Registry** en la consola. Al borrar los modelos de BigQuery ML (con `bq rm` sobre `fintech_ml`) también se eliminan sus versiones registradas. Si quedó algo, bórralo desde la consola.
+
+---
+
+## Retos Opcionales (Extensión)
+
+### Reto 1: Monitoreo gestionado en vez de PSI casero
+
+La plataforma tiene **Model Monitoring** gestionado, que calcula drift sobre las predicciones del endpoint y envía alertas sin que escribas SQL. Configúralo sobre `fintech-credit-endpoint` usando `solicitudes_historicas` como baseline, envía predicciones con datos del lote con drift, y compara qué detecta frente al PSI del pipeline.
+
+<details>
+<summary>👀 Ver Pista de Solución Reto 1</summary>
+
+Model Monitoring está en la consola en **Agent Platform → Models → Monitoring**. Necesita un baseline (los datos de entrenamiento) y tráfico real de predicciones sobre el endpoint: un monitor sin predicciones no tiene nada que comparar. Puedes generar ese tráfico con un bucle sobre `predecir.py` usando filas de `solicitudes_lote_drift`. La diferencia conceptual: el PSI del pipeline mira el **lote nuevo de entrenamiento**, mientras que Model Monitoring mira **lo que el modelo está recibiendo en producción**. Son dos puntos de control distintos y complementarios.
+
+</details>
+
+### Reto 2: Champion dinámico con alias
+
+Hoy el pipeline recibe `modelo_champion` como parámetro fijo (`credit_model_v1`). Después de que v2 gana, una segunda ejecución con drift seguiría comparando contra v1, no contra v2. Modifica `desplegar_ultima_version` para que mueva un alias `champion` a la versión recién desplegada, y haz que el pipeline evalúe contra la versión con ese alias.
+
+<details>
+<summary>👀 Ver Pista de Solución Reto 2</summary>
+
+`ModelRegistry` tiene `add_version_aliases(new_aliases=["champion"], version=...)`. Un alias es único dentro de un modelo, así que asignarlo a la versión nueva lo quita de la anterior. Para evaluar el champion con `ML.EVALUATE` necesitas el **nombre BigQuery ML** de esa versión, no el alias. Una opción es guardar ese nombre como etiqueta (*label*) de la versión en el registry al registrarla.
+
+</details>
+
+### Reto 3: Monitoreo de features en el Feature Store
+
+El SDK del Feature Store tiene `FeatureGroup.create_feature_monitor(...)`, que monitorea la distribución de las features directamente sobre el Feature Group. Explora cómo se compara con el PSI del pipeline: ¿qué ventaja tiene monitorear en el Feature Store, que ven todos los modelos que usan esas features, en vez de dentro del pipeline de un solo modelo?
+
+---
+
+## Resumen de lo Aprendido
+
+- **Feature Store (offline) no mueve tus datos:** registra columnas de BigQuery como features con dueño y descripción, para que entrenamiento y serving usen la misma definición.
+- **BigQuery ML + `model_registry='VERTEX_AI'`** lleva un modelo entrenado con SQL directo al Model Registry, con versiones. Versión nueva = mismo `vertex_ai_model_id` + nombre BigQuery ML distinto.
+- **Un endpoint factura por hora mientras exista**, aunque nadie lo use. Es el recurso que más importa limpiar.
+- **Data drift ≠ concept drift.** El PSI detecta que cambiaron las entradas. Saber si el modelo empeoró requiere etiquetas, y esas llegan tarde.
+- **Un buen pipeline de reentrenamiento tiene quality gates**: no reentrena si no hay drift, y no despliega si el challenger no le gana al champion **en el mismo holdout**.
+- **Pipelines de la plataforma = Kubeflow Pipelines serverless**: el estándar abierto (KFP) sin administrar Kubernetes, ejecutable a mano o con cron.
+- **Vertex AI ahora se llama Gemini Enterprise Agent Platform** (abril 2026), pero la API, el SDK, `gcloud ai` y los roles IAM conservan el nombre "aiplatform".
+
+---
+
+## Referencias
+
+- [Manage BigQuery ML models in the Model Registry](https://docs.cloud.google.com/bigquery/docs/managing-models-vertex)
+- [Feature Store — Create a feature group](https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/featurestore/latest/create-featuregroup)
+- [Feature Store — Monitor features](https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/featurestore/latest/monitor-features)
+- [Schedule a pipeline run with the scheduler API](https://docs.cloud.google.com/vertex-ai/docs/pipelines/schedule-pipeline-run)
+- [Gemini Enterprise Agent Platform name changes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/vertex-ai-name-changes)
+- [Kubeflow Pipelines SDK (KFP v2)](https://www.kubeflow.org/docs/components/pipelines/)
+- [python-aiplatform (código fuente del SDK)](https://github.com/googleapis/python-aiplatform)
