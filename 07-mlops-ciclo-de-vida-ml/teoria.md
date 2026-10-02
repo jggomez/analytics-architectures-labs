@@ -11,14 +11,13 @@
 ## Tabla de Contenidos
 
 1. [Resumen Ejecutivo: el Modelo es la Parte Pequeña](#1-resumen-ejecutivo-el-modelo-es-la-parte-pequeña)
-2. [El Nombre: de Vertex AI a Gemini Enterprise Agent Platform](#2-el-nombre-de-vertex-ai-a-gemini-enterprise-agent-platform)
-3. [Las Piezas del Ciclo de Vida](#3-las-piezas-del-ciclo-de-vida)
-4. [Niveles de Madurez de MLOps](#4-niveles-de-madurez-de-mlops)
-5. [Drift: Por Qué los Modelos se Degradan Solos](#5-drift-por-qué-los-modelos-se-degradan-solos)
-6. [Estrategias de Reentrenamiento](#6-estrategias-de-reentrenamiento)
-7. [Decisiones de Diseño del Lab 07](#7-decisiones-de-diseño-del-lab-07)
-8. [Costos](#8-costos)
-9. [Referencias Técnicas](#9-referencias-técnicas)
+2. [Las Piezas del Ciclo de Vida](#2-las-piezas-del-ciclo-de-vida)
+3. [Niveles de Madurez de MLOps](#3-niveles-de-madurez-de-mlops)
+4. [Drift: Por Qué los Modelos se Degradan Solos](#4-drift-por-qué-los-modelos-se-degradan-solos)
+5. [Estrategias de Reentrenamiento](#5-estrategias-de-reentrenamiento)
+6. [Decisiones de Diseño del Lab 07](#6-decisiones-de-diseño-del-lab-07)
+7. [Costos](#7-costos)
+8. [Referencias Técnicas](#8-referencias-técnicas)
 
 ---
 
@@ -47,35 +46,13 @@ LO QUE SE ENSEÑA vs. LO QUE HAY EN PRODUCCIÓN
                                         └─────────────────────────────────────┘
 ```
 
-**MLOps** es la disciplina de construir y operar esa infraestructura, de la misma forma que DevOps lo es para el software. La diferencia fundamental con el software tradicional: **un modelo se degrada aunque nadie toque su código**, porque el mundo que modela cambia. Por eso el monitoreo y el reentrenamiento no son extras, sino el centro del problema (§5).
+**MLOps** es la disciplina de construir y operar esa infraestructura, de la misma forma que DevOps lo es para el software. La diferencia fundamental con el software tradicional: **un modelo se degrada aunque nadie toque su código**, porque el mundo que modela cambia. Por eso el monitoreo y el reentrenamiento no son extras, sino el centro del problema (§4).
 
 ---
 
-## 2. El Nombre: de Vertex AI a Gemini Enterprise Agent Platform
+## 2. Las Piezas del Ciclo de Vida
 
-El 22 de abril de 2026, en Google Cloud Next '26, Google presentó **Gemini Enterprise Agent Platform** como la evolución de Vertex AI. Es el mismo patrón de rebranding que vimos con Knowledge Catalog en el [Módulo 06](../06-knowledge-catalog-mesh-fabric/teoria.md):
-
-| Antes (hasta abril 2026) | Ahora |
-|---|---|
-| Vertex AI | Gemini Enterprise Agent Platform |
-| Vertex AI Feature Store | Feature Store on Gemini Enterprise Agent Platform |
-| Vertex AI Model Registry | Model Registry on Gemini Enterprise Agent Platform |
-| Vertex AI Pipelines | Gemini Enterprise Agent Platform Pipelines |
-| Vertex AI Model Monitoring | Model Monitoring on Gemini Enterprise Agent Platform |
-
-**Lo que NO cambió** (y por eso el código del lab dice "aiplatform"):
-- La API: `aiplatform.googleapis.com`.
-- El SDK de Python: `google-cloud-aiplatform` (`from google.cloud import aiplatform`).
-- Los comandos: `gcloud ai ...`.
-- Los roles IAM: `roles/aiplatform.*`.
-
-En la consola, las piezas clásicas de ML (Feature Store, Model Registry, Endpoints, Pipelines, Monitoring) quedaron agrupadas bajo un submenú **Models**, junto a las nuevas capacidades de agentes que dieron nombre a la plataforma.
-
----
-
-## 3. Las Piezas del Ciclo de Vida
-
-### 3.1. Feature Store: Una Sola Definición para Entrenar y Servir
+### 2.1. Feature Store: Una Sola Definición para Entrenar y Servir
 
 Una *feature* es una variable de entrada del modelo (ej. `ratio_deuda_ingreso`). El problema que resuelve un Feature Store se llama **training-serving skew**: el equipo de ciencia de datos calcula la feature de una forma en el notebook de entrenamiento, el equipo de backend la reimplementa de otra forma en el servicio de predicción, y el modelo recibe en producción algo distinto de lo que vio al entrenar. El modelo no da error: **simplemente predice peor, en silencio**.
 
@@ -115,7 +92,7 @@ Si la petición trae todo lo que el modelo necesita, el online store sobra. Si e
 
 Una propiedad clave del offline store es la **corrección point-in-time**: al entrenar con datos históricos, cada fila debe usar el valor que la feature tenía **en ese momento**, no el valor actual. Si no, el modelo "ve el futuro" (*data leakage*) y su desempeño en entrenamiento es falsamente optimista. Para eso existe la columna `feature_timestamp`.
 
-### 3.2. Model Registry: Versiones, Alias y Linaje
+### 2.2. Model Registry: Versiones, Alias y Linaje
 
 El Model Registry es para los modelos lo que Git es para el código: un repositorio central con **versiones**. Cada versión guarda:
 - El artefacto del modelo.
@@ -125,7 +102,7 @@ El Model Registry es para los modelos lo que Git es para el código: un reposito
 
 Sin registry, la pregunta "¿qué modelo estaba en producción el 15 de marzo, y con qué datos se entrenó?" no tiene respuesta confiable. En industrias reguladas, como el crédito del lab, esa pregunta la hace un auditor.
 
-### 3.3. Endpoints: Inferencia Online vs. Batch
+### 2.3. Endpoints: Inferencia Online vs. Batch
 
 | | Predicción online (Endpoint) | Predicción batch |
 |---|---|---|
@@ -139,9 +116,9 @@ Un endpoint puede tener **varias versiones desplegadas a la vez** y repartir el 
 - **A/B**: dos versiones reciben tráfico en paralelo para comparar resultados de negocio.
 - **Shadow**: la versión nueva recibe copia del tráfico, pero sus respuestas no se usan; solo se comparan.
 
-El lab usa el reemplazo directo (100% a la versión nueva) por simplicidad, pero el *quality gate* previo (§6) cumple parte del rol de protección que en producción daría un canary.
+El lab usa el reemplazo directo (100% a la versión nueva) por simplicidad, pero el *quality gate* previo (§5) cumple parte del rol de protección que en producción daría un canary.
 
-### 3.4. Pipelines: Kubeflow sin Administrar Kubernetes
+### 2.4. Pipelines: Kubeflow sin Administrar Kubernetes
 
 Un pipeline de ML es un **DAG** (grafo dirigido acíclico) de pasos: preparar datos, entrenar, evaluar, registrar, desplegar. Es la misma idea del DAG de Dataform del [Módulo 01](../01-patrones-y-modelado/teoria.md) o del pipeline de Beam del [Módulo 05](../05-elt-dataflow-iceberg/teoria.md), aplicada al ciclo de vida del modelo.
 
@@ -163,7 +140,7 @@ Dos detalles prácticos que importan:
 
 ---
 
-## 4. Niveles de Madurez de MLOps
+## 3. Niveles de Madurez de MLOps
 
 Google describe tres niveles en su guía *"MLOps: Continuous delivery and automation pipelines in machine learning"*:
 
@@ -177,9 +154,9 @@ Google describe tres niveles en su guía *"MLOps: Continuous delivery and automa
 
 ---
 
-## 5. Drift: Por Qué los Modelos se Degradan Solos
+## 4. Drift: Por Qué los Modelos se Degradan Solos
 
-### 5.1. Los Tipos de Drift
+### 4.1. Los Tipos de Drift
 
 Un modelo aprende la relación entre entradas `X` y salida `y` **tal como era en los datos de entrenamiento**. Hay varias formas en que ese supuesto se rompe:
 
@@ -194,7 +171,7 @@ El punto incómodo: **el concept drift es el más dañino y el más lento de det
 
 El lote `drift` del lab inyecta **ambos** tipos a propósito: data drift (ingresos 35% más bajos, más endeudamiento) y concept drift (cambia el peso del plazo y del score en la probabilidad de impago).
 
-### 5.2. Population Stability Index (PSI)
+### 4.2. Population Stability Index (PSI)
 
 El PSI es la métrica de drift clásica en riesgo de crédito. Compara la distribución de una feature en un período base (el entrenamiento) contra un período actual:
 
@@ -218,7 +195,7 @@ Otras métricas usadas en monitoreo gestionado: la **distancia L-infinito** y la
 
 ---
 
-## 6. Estrategias de Reentrenamiento
+## 5. Estrategias de Reentrenamiento
 
 | Estrategia | Cuándo reentrena | Ventaja | Riesgo |
 |---|---|---|---|
@@ -234,7 +211,7 @@ El lab **combina las dos primeras**: un schedule (cron) que dispara el pipeline 
 
 ---
 
-## 7. Decisiones de Diseño del Lab 07
+## 6. Decisiones de Diseño del Lab 07
 
 | Decisión | Elegido en el lab | Alternativa | Por qué |
 |---|---|---|---|
@@ -246,7 +223,7 @@ El lab **combina las dos primeras**: un schedule (cron) que dispara el pipeline 
 
 ---
 
-## 8. Costos
+## 7. Costos
 
 > [!IMPORTANT]
 > - **BigQuery ML**: el entrenamiento con `CREATE MODEL` se factura por bytes procesados, con 10 GiB/mes gratis. Los datos del lab son de pocos MB.
@@ -257,7 +234,7 @@ El lab **combina las dos primeras**: un schedule (cron) que dispara el pipeline 
 
 ---
 
-## 9. Referencias Técnicas
+## 8. Referencias Técnicas
 
 1. **Sculley, D., et al. (2015).** *Hidden Technical Debt in Machine Learning Systems.* Advances in Neural Information Processing Systems (NeurIPS) 28.
 2. **Google Cloud Architecture Center.** *MLOps: Continuous delivery and automation pipelines in machine learning* (niveles de madurez 0, 1 y 2).
@@ -265,5 +242,4 @@ El lab **combina las dos primeras**: un schedule (cron) que dispara el pipeline 
 4. **Yurdakul, B. (2018).** *Statistical Properties of Population Stability Index.* Western Michigan University.
 5. **Google Cloud — Manage BigQuery ML models in the Model Registry.** [docs.cloud.google.com/bigquery/docs/managing-models-vertex](https://docs.cloud.google.com/bigquery/docs/managing-models-vertex).
 6. **Google Cloud — About Feature Store.** [docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/featurestore/latest/overview](https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/featurestore/latest/overview).
-7. **Google Cloud — Gemini Enterprise Agent Platform name changes.** [docs.cloud.google.com/gemini-enterprise-agent-platform/vertex-ai-name-changes](https://docs.cloud.google.com/gemini-enterprise-agent-platform/vertex-ai-name-changes).
-8. **Kubeflow Pipelines (KFP v2).** [kubeflow.org/docs/components/pipelines](https://www.kubeflow.org/docs/components/pipelines/).
+7. **Kubeflow Pipelines (KFP v2).** [kubeflow.org/docs/components/pipelines](https://www.kubeflow.org/docs/components/pipelines/).

@@ -227,13 +227,13 @@ python3 generar_lote.py --perfil historico
 Deberías ver unas 5000 filas, ingreso promedio ~6 (millones), y una tasa de impago cercana al 25%.
 
 > [!NOTE]
-> La columna `incumplio` es la **etiqueta** (*label*): lo que el modelo aprende a predecir. En la vida real esta etiqueta llega **con retraso**: sabes si alguien cayó en impago meses después de aprobarle el crédito. Esta es la razón de fondo por la que el *concept drift* es más difícil de detectar que el *data drift* (ver [teoría §5](teoria.md#5-drift-por-qué-los-modelos-se-degradan-solos)).
+> La columna `incumplio` es la **etiqueta** (*label*): lo que el modelo aprende a predecir. En la vida real esta etiqueta llega **con retraso**: sabes si alguien cayó en impago meses después de aprobarle el crédito. Esta es la razón de fondo por la que el *concept drift* es más difícil de detectar que el *data drift* (ver [teoría §4](teoria.md#4-drift-por-qué-los-modelos-se-degradan-solos)).
 
 ---
 
 ## Paso 2 — Feature Store: Registrar las Features (10 min)
 
-El **Feature Store** de la plataforma no copia tus datos a otro lado. Registra una tabla o vista de BigQuery como **Feature Group** y declara cuáles de sus columnas son features. El *offline store* **es** BigQuery. Lo que ganas es un catálogo central de features con dueño y descripción, del que entrenamiento y serving leen la **misma definición** (ver [teoría §3.1](teoria.md#31-feature-store-una-sola-definición-para-entrenar-y-servir)).
+El **Feature Store** de la plataforma no copia tus datos a otro lado. Registra una tabla o vista de BigQuery como **Feature Group** y declara cuáles de sus columnas son features. El *offline store* **es** BigQuery. Lo que ganas es un catálogo central de features con dueño y descripción, del que entrenamiento y serving leen la **misma definición** (ver [teoría §2.1](teoria.md#21-feature-store-una-sola-definición-para-entrenar-y-servir)).
 
 ```bash
 cat <<'EOF' > registrar_features.py
@@ -281,7 +281,7 @@ Verifícalo en la consola: **Agent Platform → Models → Feature Store → Fea
 > - **El Feature Store solo "se llena" si creas un online store.** Un *online store* con una *feature view* sí copia (sincroniza) los valores más recientes desde BigQuery a un almacenamiento optimizado para buscar por llave en milisegundos. Hace falta cuando, al momento de predecir, el que pide la predicción **no tiene** las features. Por ejemplo, la app solo conoce el `cliente_id`, y features como "pagos atrasados en los últimos 12 meses" están calculadas en la plataforma de datos y hay que buscarlas rápido. Consultar BigQuery tarda segundos; el online store, milisegundos.
 > - **En este lab no hace falta online store:** las 4 features vienen en la propia solicitud (ingreso, deuda, score y plazo los llena el cliente en el formulario), así que `predecir.py` se las manda directo al endpoint. Además, el online store cobra por hora, como un endpoint.
 >
-> Más detalle en [teoría §3.1](teoria.md#31-feature-store-una-sola-definición-para-entrenar-y-servir).
+> Más detalle en [teoría §2.1](teoria.md#21-feature-store-una-sola-definición-para-entrenar-y-servir).
 
 > [!NOTE]
 > Fíjate en el import: `from vertexai.resources.preview import feature_store`. Esta API del SDK está en el módulo `preview`, lo que significa que puede cambiar entre versiones del SDK. Por eso el Paso 0.3 fija `google-cloud-aiplatform==2.3.0`, la versión con la que se verificó este lab.
@@ -371,7 +371,7 @@ python3 desplegar_v1.py
 ```
 
 > [!NOTE]
-> **El despliegue tarda entre 10 y 20 minutos**: la plataforma aprovisiona la máquina y carga el modelo. Mientras esperas, lee la [teoría §3](teoria.md#3-las-piezas-del-ciclo-de-vida) o adelanta el Paso 5 en otra pestaña de Cloud Shell. Un modelo de BigQuery ML registrado se despliega **sin contenedor propio**: la plataforma se encarga de servirlo.
+> **El despliegue tarda entre 10 y 20 minutos**: la plataforma aprovisiona la máquina y carga el modelo. Mientras esperas, lee la [teoría §2](teoria.md#2-las-piezas-del-ciclo-de-vida) o adelanta el Paso 5 en otra pestaña de Cloud Shell. Un modelo de BigQuery ML registrado se despliega **sin contenedor propio**: la plataforma se encarga de servirlo.
 
 > [!WARNING]
 > **Por qué `disable_explanations=True` y la API de bajo nivel.** Si despliegas un modelo de BigQuery ML con el SDK de alto nivel (`modelo.deploy(...)`), el despliegue falla con:
@@ -379,6 +379,8 @@ python3 desplegar_v1.py
 > Es un **bug conocido de la plataforma** desde 2024 ([issue #2723 en vertex-ai-samples](https://github.com/GoogleCloudPlatform/vertex-ai-samples/issues/2723), [issue tracker 337998773](https://issuetracker.google.com/issues/337998773)). Al desplegar con explicaciones activas (*explainable AI*), la plataforma intenta leer el modelo exportado por BigQuery ML con una versión de TensorFlow más vieja que la que lo generó. Desplegar **desde la consola** funciona, porque no activa las explicaciones. Por eso el script usa la API de bajo nivel con `disable_explanations=True`: es lo mismo que hace la consola.
 >
 > Si en un intento anterior el script ya había creado el endpoint, esta versión lo **reutiliza** en vez de crear uno duplicado.
+>
+> **Si falla con `500 System error. Please try this operation again`**, es un error transitorio de la plataforma: vuelve a correr `python3 desplegar_v1.py`. Ojo con `Ctrl+C`: solo corta la espera en tu terminal, pero el despliegue **sigue corriendo** en Google. Antes de reintentar, revisa en la consola (**Agent Platform → Models → Online prediction → `fintech-credit-endpoint`**) que no haya un despliegue en curso, para no lanzar dos a la vez.
 
 Cuando termine, envía dos solicitudes de prueba, una de bajo riesgo y una de alto riesgo:
 

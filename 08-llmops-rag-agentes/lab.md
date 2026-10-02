@@ -41,7 +41,7 @@ ARQUITECTURA DEL LABORATORIO — FINTECHCO GENAI
 
 > [!IMPORTANT]
 > **Nombres y versiones de modelos, verificados en octubre de 2026:**
-> - Vertex AI ahora se llama **Gemini Enterprise Agent Platform** (ver [Módulo 07](../07-mlops-ciclo-de-vida-ml/teoria.md#2-el-nombre-de-vertex-ai-a-gemini-enterprise-agent-platform)).
+> - Vertex AI ahora se llama **Gemini Enterprise Agent Platform** (ver [Módulo 07](../07-mlops-ciclo-de-vida-ml/teoria.md)).
 > - En BigQuery usamos `gemini-3.5-flash` (GA en BigQuery desde el 10 de agosto de 2026) y `gemini-embedding-001` (sin retiro antes de mayo de 2028).
 > - **No uses `gemini-2.5-flash`**, aunque todavía aparece en el tutorial oficial de RAG en BigQuery: se retira el **20 de octubre de 2026**.
 > - Los modelos de IA generativa se retiran y reemplazan cada pocos meses. Antes de dictar este taller, revisa la página de versiones de modelos de la plataforma. Mantener los modelos al día es parte del trabajo de LLMOps (ver [teoría §5](teoria.md#5-llmops-qué-cambia-respecto-a-mlops)).
