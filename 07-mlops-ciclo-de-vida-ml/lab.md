@@ -428,7 +428,7 @@ Cada predicción trae la clase predicha y la probabilidad de cada clase. La prim
 
 ---
 
-## Paso 5 — Drift: Lotes Nuevos (10 min)
+## Paso 5 — Drift: Lotes Nuevos (15 min)
 
 Pasa el tiempo y llegan solicitudes nuevas. Generamos dos escenarios:
 
@@ -451,6 +451,54 @@ FROM `fintech_silver.solicitudes_lote_drift`;
 ```
 
 El lote `sano` se parece al histórico. El lote `drift` simula una crisis económica: ingresos más bajos, más endeudamiento y mucho más impago. Además, en el lote con drift **cambió la relación** entre las features y el impago: el plazo ahora pesa mucho más y el score casi nada. Eso es *concept drift*, y es lo que hace que el modelo v1 se equivoque más aunque sus entradas sigan siendo válidas.
+
+### 5.1. ¿Cómo detecta el pipeline el drift? El PSI con un ejemplo
+
+Comparar promedios sirve para mirar, pero el pipeline necesita **un número** para decidir si reentrena. Ese número es el **PSI** (*Population Stability Index*), y responde una sola pregunta: **¿los clientes nuevos se parecen a los clientes con los que entrenamos el modelo?**
+
+Para responderla, **agrupa a los clientes en cajones** y compara cuántos caen en cada cajón antes y ahora. Un ejemplo con solo la feature "ingreso" y 3 cajones:
+
+**1. Con los datos de entrenamiento se arman los cajones**, cortados para que en cada uno caiga la misma cantidad de clientes:
+
+| Cajón | Ingreso | % de clientes de entrenamiento |
+|---|---|---|
+| Bajo | menos de 3 millones | 33% |
+| Medio | de 3 a 6 millones | 33% |
+| Alto | más de 6 millones | 33% |
+
+**2. El lote nuevo se mete en los mismos cajones**, con los mismos cortes de 3 y 6 millones.
+
+| Cajón | Antes | Lote sano | Lote con drift (crisis) |
+|---|---|---|---|
+| Bajo | 33% | 35% | **70%** |
+| Medio | 33% | 32% | 25% |
+| Alto | 33% | 33% | **5%** |
+
+En el lote sano los clientes se reparten casi igual. En el lote con drift se amontonaron en el cajón "bajo".
+
+**3. Se convierte en un número.** Para cada cajón se mide cuánto cambió, con `(ahora − antes) × ln(ahora / antes)`, y se suman los resultados. Para el lote con drift:
+
+| Cajón | Antes | Ahora | Cuánto aporta |
+|---|---|---|---|
+| Bajo | 0.33 | 0.70 | (0.70 − 0.33) × ln(0.70 / 0.33) = 0.37 × 0.75 = **0.28** |
+| Medio | 0.33 | 0.25 | (0.25 − 0.33) × ln(0.25 / 0.33) = −0.08 × −0.28 = **0.02** |
+| Alto | 0.33 | 0.05 | (0.05 − 0.33) × ln(0.05 / 0.33) = −0.28 × −1.89 = **0.53** |
+| | | **PSI** | **0.83** |
+
+No hace falta memorizar la fórmula. Lo importante:
+- Si un cajón **no cambia**, aporta 0. Por eso el lote sano da un PSI cercano a 0.
+- Si un cajón **cambia mucho**, aporta mucho, tanto si se llena como si se vacía. Por eso el PSI nunca resta.
+
+| PSI | Lectura |
+|---|---|
+| Menor a 0.1 | Nada relevante cambió |
+| De 0.1 a 0.2 | Cambio moderado, vigilar |
+| Mayor a 0.2 | Cambió bastante: el umbral que usa el pipeline para reentrenar |
+
+En el pipeline del Paso 6, el componente `1-calcular-drift-psi` hace exactamente esto, pero con **10 cajones** en vez de 3, y para las **4 features**. Se queda con el PSI más alto de las cuatro, porque basta con que una cambie mucho para que el modelo pueda equivocarse. Lo calcula en SQL: `APPROX_QUANTILES` arma los cortes con los datos del champion, y `RANGE_BUCKET` decide a qué cajón va cada fila.
+
+> [!NOTE]
+> El PSI mira si cambiaron las **entradas** (*data drift*). No ve si cambió la relación entre las entradas y el impago (*concept drift*). Por eso el pipeline tiene un segundo filtro: el challenger solo se despliega si le gana en AUC al champion. Más detalle en [teoría §4.2](teoria.md#42-population-stability-index-psi).
 
 ---
 
