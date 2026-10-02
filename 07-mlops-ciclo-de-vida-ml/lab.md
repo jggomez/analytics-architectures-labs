@@ -1,6 +1,6 @@
 # Lab 07 — MLOps en GCP: Feature Store, Model Registry, Endpoints y Reentrenamiento por Drift
 
-> 📖 **Marco Teórico:** Consulta la [Guía de MLOps y Ciclo de Vida de ML](teoria.md) para entender los niveles de madurez de MLOps, data drift vs. concept drift, y qué problema resuelve cada pieza (Feature Store, Model Registry, Endpoints, Pipelines).
+> 📖 **Marco Teórico:** Consulta la [Guía de MLOps y Ciclo de Vida de ML](teoria.md) para entender qué es MLOps y sus fases, qué problema resuelve cada componente (Feature Store, Model Registry, serving, pipelines, monitoreo), data drift vs. concept drift, los trade-offs, y cómo se mapea cada concepto a GCP, AWS, Azure, Databricks y open source.
 >
 > Este lab es independiente: genera sus propios datos y no requiere haber completado los Módulos 01-06. Usa la narrativa de **FinTechCo** (solicitudes de crédito) del [Módulo 01](../01-patrones-y-modelado/lab.md).
 
@@ -230,13 +230,13 @@ python3 generar_lote.py --perfil historico
 Deberías ver unas 5000 filas, ingreso promedio ~6 (millones), y una tasa de impago cercana al 25%.
 
 > [!NOTE]
-> La columna `incumplio` es la **etiqueta** (*label*): lo que el modelo aprende a predecir. En la vida real esta etiqueta llega **con retraso**: sabes si alguien cayó en impago meses después de aprobarle el crédito. Esta es la razón de fondo por la que el *concept drift* es más difícil de detectar que el *data drift* (ver [teoría §4](teoria.md#4-drift-por-qué-los-modelos-se-degradan-solos)).
+> La columna `incumplio` es la **etiqueta** (*label*): lo que el modelo aprende a predecir. En la vida real esta etiqueta llega **con retraso**: sabes si alguien cayó en impago meses después de aprobarle el crédito. Esta es la razón de fondo por la que el *concept drift* es más difícil de detectar que el *data drift* (ver [teoría §6](teoria.md#6-drift-por-qué-los-modelos-se-degradan-solos)).
 
 ---
 
 ## Paso 2 — Feature Store: Registrar las Features (10 min)
 
-El **Feature Store** de la plataforma no copia tus datos a otro lado. Registra una tabla o vista de BigQuery como **Feature Group** y declara cuáles de sus columnas son features. El *offline store* **es** BigQuery. Lo que ganas es un catálogo central de features con dueño y descripción, del que entrenamiento y serving leen la **misma definición** (ver [teoría §2.1](teoria.md#21-feature-store-una-sola-definición-para-entrenar-y-servir)).
+El **Feature Store** de la plataforma no copia tus datos a otro lado. Registra una tabla o vista de BigQuery como **Feature Group** y declara cuáles de sus columnas son features. El *offline store* **es** BigQuery. Lo que ganas es un catálogo central de features con dueño y descripción, del que entrenamiento y serving leen la **misma definición** (ver [teoría §4.1](teoria.md#41-feature-store-una-sola-definición-para-entrenar-y-servir)).
 
 ```bash
 cat <<'EOF' > registrar_features.py
@@ -284,7 +284,7 @@ Verifícalo en la consola: **Agent Platform → Models → Feature Store → Fea
 > - **El Feature Store solo "se llena" si creas un online store.** Un *online store* con una *feature view* sí copia (sincroniza) los valores más recientes desde BigQuery a un almacenamiento optimizado para buscar por llave en milisegundos. Hace falta cuando, al momento de predecir, el que pide la predicción **no tiene** las features. Por ejemplo, la app solo conoce el `cliente_id`, y features como "pagos atrasados en los últimos 12 meses" están calculadas en la plataforma de datos y hay que buscarlas rápido. Consultar BigQuery tarda segundos; el online store, milisegundos.
 > - **En este lab no hace falta online store:** las 4 features vienen en la propia solicitud (ingreso, deuda, score y plazo los llena el cliente en el formulario), así que `predecir.py` se las manda directo al endpoint. Además, el online store cobra por hora, como un endpoint.
 >
-> Más detalle en [teoría §2.1](teoria.md#21-feature-store-una-sola-definición-para-entrenar-y-servir).
+> Más detalle en [teoría §4.1](teoria.md#41-feature-store-una-sola-definición-para-entrenar-y-servir).
 
 > [!NOTE]
 > Fíjate en el import: `from vertexai.resources.preview import feature_store`. Esta API del SDK está en el módulo `preview`, lo que significa que puede cambiar entre versiones del SDK. Por eso el Paso 0.3 fija `google-cloud-aiplatform==2.3.0`, la versión con la que se verificó este lab.
@@ -388,7 +388,7 @@ python3 desplegar_v1.py
 ```
 
 > [!NOTE]
-> **El despliegue tarda entre 10 y 20 minutos**: la plataforma aprovisiona la máquina y carga el modelo. Mientras esperas, lee la [teoría §2](teoria.md#2-las-piezas-del-ciclo-de-vida) o adelanta el Paso 5 en otra pestaña de Cloud Shell. Un modelo de BigQuery ML registrado se despliega **sin contenedor propio**: la plataforma se encarga de servirlo.
+> **El despliegue tarda entre 10 y 20 minutos**: la plataforma aprovisiona la máquina y carga el modelo. Mientras esperas, lee la [teoría §4](teoria.md#4-los-componentes-de-una-plataforma-de-mlops) o adelanta el Paso 5 en otra pestaña de Cloud Shell. Un modelo de BigQuery ML registrado se despliega **sin contenedor propio**: la plataforma se encarga de servirlo.
 
 > [!WARNING]
 > **Por qué `disable_explanations=True` y la API de bajo nivel.** Si despliegas un modelo de BigQuery ML con el SDK de alto nivel (`modelo.deploy(...)`), el despliegue falla con:
@@ -498,7 +498,7 @@ No hace falta memorizar la fórmula. Lo importante:
 En el pipeline del Paso 6, el componente `1-calcular-drift-psi` hace exactamente esto, pero con **10 cajones** en vez de 3, y para las **4 features**. Se queda con el PSI más alto de las cuatro, porque basta con que una cambie mucho para que el modelo pueda equivocarse. Lo calcula en SQL: `APPROX_QUANTILES` arma los cortes con los datos del champion, y `RANGE_BUCKET` decide a qué cajón va cada fila.
 
 > [!NOTE]
-> El PSI mira si cambiaron las **entradas** (*data drift*). No ve si cambió la relación entre las entradas y el impago (*concept drift*). Por eso el pipeline tiene un segundo filtro: el challenger solo se despliega si le gana en AUC al champion. Más detalle en [teoría §4.2](teoria.md#42-population-stability-index-psi).
+> El PSI mira si cambiaron las **entradas** (*data drift*). No ve si cambió la relación entre las entradas y el impago (*concept drift*). Por eso el pipeline tiene un segundo filtro: el challenger solo se despliega si le gana en AUC al champion. Más detalle en [teoría §6.2](teoria.md#62-population-stability-index-psi).
 
 ---
 

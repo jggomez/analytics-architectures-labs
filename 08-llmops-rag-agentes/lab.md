@@ -1,6 +1,6 @@
 # Lab 08 — LLMOps: RAG en BigQuery, un Agente con ADK y Cómo Medirlo
 
-> 📖 **Marco Teórico:** Consulta la [Guía de LLMOps, RAG y Agentes](teoria.md) para entender embeddings, búsqueda vectorial, RAG vs. fine-tuning, qué es un agente, y en qué se diferencia LLMOps del MLOps del [Módulo 07](../07-mlops-ciclo-de-vida-ml/teoria.md).
+> 📖 **Marco Teórico:** Consulta la [Guía de LLMOps, RAG y Agentes](teoria.md) para entender qué es LLMOps y en qué se diferencia del MLOps del [Módulo 07](../07-mlops-ciclo-de-vida-ml/teoria.md), el ciclo de vida de una aplicación con LLMs, embeddings y bases vectoriales, RAG vs. fine-tuning, agentes, evaluación, seguridad, trade-offs, y cómo se mapea cada concepto a GCP, AWS, Azure, Databricks y open source.
 >
 > Este lab es independiente: genera sus propios datos. Continúa la narrativa de **FinTechCo** de los Módulos 01 y 07.
 
@@ -44,7 +44,7 @@ ARQUITECTURA DEL LABORATORIO — FINTECHCO GENAI
 > - Vertex AI ahora se llama **Gemini Enterprise Agent Platform** (ver [Módulo 07](../07-mlops-ciclo-de-vida-ml/teoria.md)).
 > - En BigQuery usamos `gemini-3.5-flash` (GA en BigQuery desde el 10 de agosto de 2026) y `gemini-embedding-001` (sin retiro antes de mayo de 2028).
 > - **No uses `gemini-2.5-flash`**, aunque todavía aparece en el tutorial oficial de RAG en BigQuery: se retira el **20 de octubre de 2026**.
-> - Los modelos de IA generativa se retiran y reemplazan cada pocos meses. Antes de dictar este taller, revisa la página de versiones de modelos de la plataforma. Mantener los modelos al día es parte del trabajo de LLMOps (ver [teoría §5](teoria.md#5-llmops-qué-cambia-respecto-a-mlops)).
+> - Los modelos de IA generativa se retiran y reemplazan cada pocos meses. Antes de dictar este taller, revisa la página de versiones de modelos de la plataforma. Mantener los modelos al día es parte del trabajo de LLMOps (ver [teoría §8.1](teoria.md#81-el-ciclo-de-vida-de-los-modelos-base)).
 
 ---
 
@@ -131,7 +131,7 @@ mkdir -p ~/lab08/agente_credito && cd ~/lab08
 
 ### 1.1. El manual, ya dividido en chunks
 
-En un caso real, el manual sería un PDF que alguien divide en fragmentos (*chunks*). Aquí lo cargamos ya dividido en 12 secciones cortas. Cada chunk es **una idea completa**: esa decisión de diseño es el factor que más pesa en la calidad de un RAG (ver [teoría §2.3](teoria.md#23-chunking-la-decisión-más-subestimada)).
+En un caso real, el manual sería un PDF que alguien divide en fragmentos (*chunks*). Aquí lo cargamos ya dividido en 12 secciones cortas. Cada chunk es **una idea completa**: esa decisión de diseño es el factor que más pesa en la calidad de un RAG (ver [teoría §4.3](teoria.md#43-chunking-la-decisión-más-subestimada)).
 
 Ejecuta en BigQuery Studio:
 
@@ -396,7 +396,7 @@ En el panel de eventos de la interfaz puedes ver **qué herramienta eligió el a
 > - **Si el modelo no está disponible en tu ubicación:** el agente usa el alias `gemini-flash-latest` en la ubicación `global`, como recomiendan las guías oficiales de ADK. Si ves un error de modelo no encontrado, revisa en la página de versiones de modelos de la plataforma qué modelo y ubicación están disponibles, y ajusta `MODELO_AGENTE` y `GOOGLE_CLOUD_LOCATION` antes de volver a correr `adk web`.
 
 > [!IMPORTANT]
-> Nota la diferencia deliberada: en BigQuery fijamos la versión exacta (`gemini-3.5-flash`), y en el agente usamos un **alias** (`gemini-flash-latest`) que Google mueve a la versión más nueva. El alias evita que el agente se rompa cuando un modelo se retira, pero **el comportamiento puede cambiar sin que cambies tu código**. Por eso un sistema serio fija versiones en evaluación y en producción, y actualiza deliberadamente después de re-evaluar. Es el equivalente en LLMOps del champion/challenger del Módulo 07 (ver [teoría §5](teoria.md#5-llmops-qué-cambia-respecto-a-mlops)).
+> Nota la diferencia deliberada: en BigQuery fijamos la versión exacta (`gemini-3.5-flash`), y en el agente usamos un **alias** (`gemini-flash-latest`) que Google mueve a la versión más nueva. El alias evita que el agente se rompa cuando un modelo se retira, pero **el comportamiento puede cambiar sin que cambies tu código**. Por eso un sistema serio fija versiones en evaluación y en producción, y actualiza deliberadamente después de re-evaluar. Es el equivalente en LLMOps del champion/challenger del Módulo 07 (ver [teoría §8.1](teoria.md#81-el-ciclo-de-vida-de-los-modelos-base)).
 
 Detén `adk web` con `Ctrl+C` antes del Paso 5.
 
