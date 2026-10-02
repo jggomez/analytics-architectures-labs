@@ -272,7 +272,16 @@ EOF
 python3 registrar_features.py
 ```
 
-Verifícalo en la consola: **Agent Platform → Models → Feature Store → Feature Registry**. Deberías ver el grupo `fintech_solicitudes` con sus 4 features.
+Verifícalo en la consola: **Agent Platform → Models → Feature Store → Feature Registry**. Deberías ver el grupo `fintech_solicitudes` con sus 4 features, la tabla de BigQuery que les sirve de fuente y la llave `solicitud_id`.
+
+> [!IMPORTANT]
+> **Este paso no copia ni un solo dato.** Si buscas "dónde quedaron las filas", siguen en `fintech_silver.solicitudes_historicas`. El Feature Group es un **registro de metadatos**: qué tabla es la fuente, cuál es la llave de la entidad y qué columnas son features, con su descripción. Por eso:
+>
+> - **Para entrenar o reentrenar, se lee directo de BigQuery** con SQL, como hacen el Paso 3 y el pipeline. El registry no es otro camino para leer los datos: te dice **cuál es la definición oficial** de cada feature, para que todos los modelos usen la misma.
+> - **El Feature Store solo "se llena" si creas un online store.** Un *online store* con una *feature view* sí copia (sincroniza) los valores más recientes desde BigQuery a un almacenamiento optimizado para buscar por llave en milisegundos. Hace falta cuando, al momento de predecir, el que pide la predicción **no tiene** las features. Por ejemplo, la app solo conoce el `cliente_id`, y features como "pagos atrasados en los últimos 12 meses" están calculadas en la plataforma de datos y hay que buscarlas rápido. Consultar BigQuery tarda segundos; el online store, milisegundos.
+> - **En este lab no hace falta online store:** las 4 features vienen en la propia solicitud (ingreso, deuda, score y plazo los llena el cliente en el formulario), así que `predecir.py` se las manda directo al endpoint. Además, el online store cobra por hora, como un endpoint.
+>
+> Más detalle en [teoría §3.1](teoria.md#31-feature-store-una-sola-definición-para-entrenar-y-servir).
 
 > [!NOTE]
 > Fíjate en el import: `from vertexai.resources.preview import feature_store`. Esta API del SDK está en el módulo `preview`, lo que significa que puede cambiar entre versiones del SDK. Por eso el Paso 0.3 fija `google-cloud-aiplatform==2.3.0`, la versión con la que se verificó este lab.

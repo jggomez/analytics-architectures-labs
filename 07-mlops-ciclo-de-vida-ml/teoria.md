@@ -94,6 +94,25 @@ Un Feature Store tiene dos almacenes:
 - **Offline store**: el historial completo de features, para entrenar. En la plataforma de Google, **el offline store es BigQuery**: el Feature Store no copia los datos, registra tablas o vistas existentes como *Feature Groups*.
 - **Online store**: los valores más recientes, con latencia de milisegundos, para servir predicciones en tiempo real. Este sí es infraestructura aparte (con costo por hora) y solo se justifica cuando el endpoint necesita buscar features por clave en el momento de predecir.
 
+**¿Cuándo hace falta el online store?** El modelo necesita las features no solo para entrenar, sino **cada vez que predice**. La pregunta decisiva es quién tiene esas features en el momento de pedir la predicción:
+
+```
+LA APP YA TIENE LAS FEATURES             LA APP SOLO TIENE UNA LLAVE
+(datos del formulario)                   (features calculadas sobre la historia)
+
+App ──(ingreso, deuda, score, plazo)──►  App ──(cliente_id)──► Servicio
+          Endpoint                                               │ búsqueda en ms
+                                                                 ▼
+ No necesitas online store                                 Online Store
+                                                 (últimos valores, sincronizados
+                                                  desde BigQuery)
+                                                                 │
+                                                                 ▼
+                                                             Endpoint
+```
+
+Si la petición trae todo lo que el modelo necesita, el online store sobra. Si el modelo usa features calculadas en la plataforma de datos (por ejemplo, "pagos atrasados en los últimos 12 meses"), hay que buscarlas por llave en milisegundos, y consultar BigQuery en cada predicción es demasiado lento. Ahí el online store es la copia rápida de los valores más recientes de cada entidad.
+
 Una propiedad clave del offline store es la **corrección point-in-time**: al entrenar con datos históricos, cada fila debe usar el valor que la feature tenía **en ese momento**, no el valor actual. Si no, el modelo "ve el futuro" (*data leakage*) y su desempeño en entrenamiento es falsamente optimista. Para eso existe la columna `feature_timestamp`.
 
 ### 3.2. Model Registry: Versiones, Alias y Linaje
