@@ -35,9 +35,6 @@ ARQUITECTURA DEL LABORATORIO — FINTECHCO MLOPS
   └─────────────────────────────────────────────────────────┘
 ```
 
-> [!IMPORTANT]
-> **Vertex AI cambió de nombre.** El 22 de abril de 2026, Google lo renombró a **Gemini Enterprise Agent Platform**. Feature Store, Model Registry, Endpoints, Pipelines y Model Monitoring siguen existiendo, ahora agrupados bajo el submenú **Models** de la plataforma en la consola. Pero la API (`aiplatform.googleapis.com`), el SDK de Python (`google-cloud-aiplatform`), el grupo de comandos `gcloud ai` y los roles IAM (`roles/aiplatform.*`) **conservan sus nombres**. Por eso en este lab verás "aiplatform" en el código aunque la consola diga "Agent Platform". Detalles en [teoría §2](teoria.md#2-el-nombre-de-vertex-ai-a-gemini-enterprise-agent-platform).
-
 ---
 
 ### Objetivos
