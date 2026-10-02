@@ -207,7 +207,7 @@ El lab **combina las dos primeras**: un schedule (cron) que dispara el pipeline 
 
 **Ventana deslizante vs. acumulativa:** al reentrenar, ¿se usan todos los datos históricos o solo los recientes? Con concept drift, los datos viejos describen un mundo que ya no existe y "diluyen" lo nuevo. Por eso el lab entrena el challenger **solo con el lote reciente** (ventana deslizante). Con drift leve, acumular historia suele dar modelos más estables.
 
-**Champion / challenger:** el modelo en producción es el *champion*; el recién entrenado es el *challenger*. El challenger solo reemplaza al champion si gana en una comparación justa: **la misma métrica, sobre el mismo conjunto de evaluación, que ninguno de los dos vio al entrenar**. Este *quality gate* es lo que separa un pipeline de MLOps de un cron que reentrena a ciegas.
+**Champion / challenger:** el modelo en producción es el *champion*; el recién entrenado es el *challenger*. El challenger solo reemplaza al champion si gana en una comparación justa: **la misma métrica, sobre el mismo conjunto de evaluación, que ninguno de los dos vio al entrenar**. Este *quality gate* es lo que separa un pipeline de MLOps de un cron que reentrena a ciegas. Y cuando el challenger gana, **pasa a ser el champion**: desde ese momento es la referencia contra la que se compara el siguiente challenger y contra cuyos datos de entrenamiento se mide el drift.
 
 ---
 
@@ -218,6 +218,7 @@ El lab **combina las dos primeras**: un schedule (cron) que dispara el pipeline 
 | Cómo entrenar | **BigQuery ML** (`CREATE MODEL`) | Custom training (Python en un contenedor) | El modelo se entrena con SQL, en el mismo lugar donde viven los datos Silver, y se registra solo en el Model Registry con `model_registry = 'VERTEX_AI'`. Custom training agrega unos 30 minutos de setup que no aportan al objetivo del taller |
 | Feature Store | **Solo offline** | Online store | El offline store es BigQuery (sin costo de nodos). El online store solo se justifica cuando el endpoint necesita buscar features por clave en milisegundos |
 | Detección de drift | **PSI calculado con SQL dentro del pipeline** | Model Monitoring gestionado; *feature monitors* del Feature Store | El PSI es transparente (se ve la fórmula), determinístico para una demo en vivo y prácticamente gratis. Las alternativas gestionadas quedan como retos |
+| Quién es el champion | **Alias `champion` en el registry + tabla `champion_historial` en BigQuery**, leídos al inicio de cada ejecución | Parámetro fijo del pipeline | Con un parámetro fijo, tras promover la v2 el pipeline seguiría comparando AUC y midiendo drift contra la v1, que ya no está en producción. El alias dice qué versión sirve; la tabla agrega lo que el alias no guarda (el nombre BigQuery ML para `ML.EVALUATE` y los datos de entrenamiento para el PSI) y deja un historial de promociones |
 | Inferencia | **Endpoint online** | Batch prediction | Es la pieza más representativa de "modelo en producción", con la advertencia explícita de su costo por hora |
 | Datos | **Sintéticos, generados con SQL** | Datos reales de los Módulos 01/05 | Permiten **inyectar drift a propósito** y hacen el lab independiente de los otros módulos |
 

@@ -29,8 +29,10 @@ ARQUITECTURA DEL LABORATORIO — FINTECHCO MLOPS
                  │ despliega solo si el challenger gana
   ┌──────────────┴─────────────────────────────────────────┐
   │ PIPELINE DE REENTRENAMIENTO (Kubeflow Pipelines)        │
+  │  0. leer champion actual (alias + historial)            │
   │  1. PSI (drift) ─► ¿> 0.2? ─► 2. reentrenar (BQML)       │
   │  3. AUC challenger vs. champion ─► ¿gana? ─► 4. deploy   │
+  │     y el challenger pasa a ser el nuevo champion         │
   │  Ejecución manual  o  programada con cron                │
   └─────────────────────────────────────────────────────────┘
 ```
@@ -102,6 +104,7 @@ gcloud services enable \
   aiplatform.googleapis.com \
   bigquery.googleapis.com \
   bigquerystorage.googleapis.com \
+  cloudresourcemanager.googleapis.com \
   compute.googleapis.com \
   storage.googleapis.com
 
@@ -299,7 +302,7 @@ OPTIONS (
   input_label_cols = ['incumplio'],
   model_registry = 'VERTEX_AI',
   vertex_ai_model_id = 'fintech_credit_risk',
-  vertex_ai_model_version_aliases = ['v1']
+  vertex_ai_model_version_aliases = ['v1', 'champion']
 ) AS
 SELECT ingreso_mensual_m, ratio_deuda_ingreso, score_crediticio, plazo_meses, incumplio
 FROM `fintech_silver.solicitudes_historicas`;
@@ -308,7 +311,21 @@ FROM `fintech_silver.solicitudes_historicas`;
 Tres opciones hacen el trabajo de MLOps:
 - `model_registry = 'VERTEX_AI'` registra el modelo en el **Model Registry** automáticamente al terminar el entrenamiento.
 - `vertex_ai_model_id = 'fintech_credit_risk'` es el **nombre del modelo en el registry**. Todos los modelos futuros que usen este mismo ID (con un nombre BigQuery ML distinto) se registran como **versiones nuevas** del mismo modelo. Así va a crear el pipeline la v2.
-- `vertex_ai_model_version_aliases = ['v1']` le pone un alias legible a esta versión, que usaremos para desplegarla.
+- `vertex_ai_model_version_aliases = ['v1', 'champion']` le pone dos alias a esta versión: `v1`, que usaremos para desplegarla, y `champion`, que marca **cuál es el modelo en producción**. Cuando el pipeline promueva una versión nueva, le moverá el alias `champion`.
+
+Registra también a la v1 como champion en una tabla de historial. El pipeline la consulta para saber **contra qué modelo comparar** y **contra qué datos medir el drift**:
+
+```sql
+CREATE OR REPLACE TABLE `fintech_ml.champion_historial` AS
+SELECT
+  '1' AS version_id,
+  CONCAT(@@project_id, '.fintech_ml.credit_model_v1') AS modelo_bqml,
+  CONCAT(@@project_id, '.fintech_silver.solicitudes_historicas') AS tabla_entrenamiento,
+  CURRENT_TIMESTAMP() AS fecha;
+```
+
+> [!NOTE]
+> ¿Por qué una tabla si ya existe el alias `champion` en el registry? El alias dice **cuál versión** es la champion, pero `ML.EVALUATE` necesita el **nombre del modelo en BigQuery ML** (`credit_model_v1`), y el PSI necesita saber **con qué datos se entrenó**. Esa tabla guarda los tres datos y, de paso, deja un historial auditable de cada promoción.
 
 > [!WARNING]
 > Si vuelves a ejecutar `CREATE OR REPLACE MODEL` **con el mismo nombre BigQuery ML** (`credit_model_v1`), BigQuery **reemplaza** la versión existente en el registry en vez de crear una nueva. Para tener v1, v2, v3... cada versión necesita un nombre BigQuery ML distinto con el mismo `vertex_ai_model_id`. El pipeline del Paso 6 lo hace usando el ID de la ejecución en el nombre.
@@ -320,7 +337,7 @@ SELECT precision, recall, accuracy, roc_auc
 FROM ML.EVALUATE(MODEL `fintech_ml.credit_model_v1`);
 ```
 
-Verifícalo en la consola: **Agent Platform → Models → Model Registry** → `fintech_credit_risk` → versión 1 con el alias `v1`.
+Verifícalo en la consola: **Agent Platform → Models → Model Registry** → `fintech_credit_risk` → versión 1 con los alias `v1` y `champion`.
 
 ---
 
@@ -445,10 +462,31 @@ El pipeline usa **Kubeflow Pipelines (KFP)**. Escribes el flujo en Python con el
 cat <<'EOF' > pipeline.py
 """Pipeline de reentrenamiento continuo: detecta drift (PSI), reentrena con BigQuery ML,
 compara challenger vs. champion y solo despliega si el nuevo modelo es mejor."""
+from typing import NamedTuple
+
 from kfp import dsl
 
 PKGS_BQ = ["google-cloud-bigquery==3.46.0"]
-PKGS_AIP = ["google-cloud-aiplatform==2.3.0"]
+PKGS_AIP = ["google-cloud-aiplatform==2.3.0", "google-cloud-bigquery==3.46.0"]
+
+
+@dsl.component(base_image="python:3.11", packages_to_install=PKGS_BQ)
+def leer_champion(project: str, location: str) -> NamedTuple(
+        "Champion", [("modelo_bqml", str), ("tabla_entrenamiento", str)]):
+    from collections import namedtuple
+
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project, location=location)
+    fila = list(client.query(f"""
+    SELECT version_id, modelo_bqml, tabla_entrenamiento
+    FROM `{project}.fintech_ml.champion_historial`
+    ORDER BY fecha DESC LIMIT 1
+    """).result())[0]
+    print(f"Champion actual: versión {fila.version_id} ({fila.modelo_bqml}), "
+          f"entrenada con {fila.tabla_entrenamiento}")
+    Champion = namedtuple("Champion", ["modelo_bqml", "tabla_entrenamiento"])
+    return Champion(fila.modelo_bqml, fila.tabla_entrenamiento)
 
 
 @dsl.component(base_image="python:3.11", packages_to_install=PKGS_BQ)
@@ -530,9 +568,10 @@ def evaluar_auc(project: str, location: str, modelo: str, tabla_actual: str) -> 
 
 
 @dsl.component(base_image="python:3.11", packages_to_install=PKGS_AIP)
-def desplegar_ultima_version(project: str, location: str, vertex_model_id: str,
-                             endpoint_display_name: str) -> str:
-    from google.cloud import aiplatform
+def promover_challenger(project: str, location: str, vertex_model_id: str,
+                        endpoint_display_name: str, modelo_bqml: str,
+                        tabla_entrenamiento: str) -> str:
+    from google.cloud import aiplatform, bigquery
     from google.cloud.aiplatform import ModelRegistry
     from google.cloud.aiplatform_v1 import EndpointServiceClient
     from google.cloud.aiplatform_v1.types import DedicatedResources, DeployedModel, MachineSpec
@@ -566,7 +605,17 @@ def desplegar_ultima_version(project: str, location: str, vertex_model_id: str,
     for deployed_model_id in anteriores:
         endpoint.undeploy(deployed_model_id=deployed_model_id)
 
-    print(f"Desplegada la versión {ultima.version_id}; retiradas: {anteriores}")
+    # El challenger pasa a ser el champion: se le mueve el alias (un alias es único
+    # dentro del modelo, así que se quita de la versión anterior) y se registra en el
+    # historial, que la próxima ejecución leerá en leer_champion.
+    registry.add_version_aliases(new_aliases=["champion"], version=ultima.version_id)
+    bigquery.Client(project=project, location=location).query(f"""
+    INSERT INTO `{project}.fintech_ml.champion_historial`
+    VALUES ('{ultima.version_id}', '{modelo_bqml}', '{tabla_entrenamiento}', CURRENT_TIMESTAMP())
+    """).result()
+
+    print(f"Desplegada y promovida a champion la versión {ultima.version_id}; "
+          f"retiradas: {anteriores}")
     return f"{vertex_model_id}@{ultima.version_id}"
 
 
@@ -574,15 +623,18 @@ def desplegar_ultima_version(project: str, location: str, vertex_model_id: str,
 def pipeline(
     project: str,
     location: str,
-    tabla_base: str,
     tabla_actual: str,
-    modelo_champion: str,
     vertex_model_id: str = "fintech_credit_risk",
     endpoint_display_name: str = "fintech-credit-endpoint",
     umbral_psi: float = 0.2,
 ):
+    champion = leer_champion(project=project, location=location)
+    champion.set_display_name("0-leer-champion")
+
+    # El drift se mide contra los datos con los que se entrenó el champion actual
     psi = calcular_psi(project=project, location=location,
-                       tabla_base=tabla_base, tabla_actual=tabla_actual)
+                       tabla_base=champion.outputs["tabla_entrenamiento"],
+                       tabla_actual=tabla_actual)
     psi.set_display_name("1-calcular-drift-psi")
 
     with dsl.If(psi.output > umbral_psi, name="hay-drift"):
@@ -596,14 +648,17 @@ def pipeline(
         auc_challenger.set_display_name("3a-auc-challenger")
 
         auc_champion = evaluar_auc(project=project, location=location,
-                                   modelo=modelo_champion, tabla_actual=tabla_actual)
+                                   modelo=champion.outputs["modelo_bqml"],
+                                   tabla_actual=tabla_actual)
         auc_champion.set_display_name("3b-auc-champion")
 
         with dsl.If(auc_challenger.output > auc_champion.output, name="challenger-gana"):
-            despliegue = desplegar_ultima_version(project=project, location=location,
-                                                  vertex_model_id=vertex_model_id,
-                                                  endpoint_display_name=endpoint_display_name)
-            despliegue.set_display_name("4-desplegar-challenger")
+            promocion = promover_challenger(project=project, location=location,
+                                            vertex_model_id=vertex_model_id,
+                                            endpoint_display_name=endpoint_display_name,
+                                            modelo_bqml=challenger.output,
+                                            tabla_entrenamiento=tabla_actual)
+            promocion.set_display_name("4-desplegar-y-promover-challenger")
 EOF
 ```
 
@@ -640,9 +695,7 @@ job = aiplatform.PipelineJob(
     parameter_values={
         "project": PROJECT_ID,
         "location": REGION,
-        "tabla_base": f"{PROJECT_ID}.fintech_silver.solicitudes_historicas",
         "tabla_actual": f"{PROJECT_ID}.fintech_silver.{args.lote}",
-        "modelo_champion": f"{PROJECT_ID}.fintech_ml.credit_model_v1",
     },
     enable_caching=False,  # con caché, una corrida con los mismos parámetros reutilizaría el PSI viejo
 )
@@ -665,7 +718,8 @@ python3 ejecutar_pipeline.py --lote solicitudes_lote_sano
 
 Abre el enlace que imprime, o ve a **Agent Platform → Models → Pipelines**. La primera ejecución tarda unos minutos más porque cada componente descarga su contenedor y sus paquetes. En el grafo vas a ver:
 
-- `1-calcular-drift-psi` termina con un PSI máximo muy bajo, alrededor de 0.01-0.02. Lo ves en los logs del componente.
+- `0-leer-champion` lee de `champion_historial` cuál es el champion (la v1) y con qué datos se entrenó (`solicitudes_historicas`).
+- `1-calcular-drift-psi` compara el lote contra esos datos y termina con un PSI máximo muy bajo, alrededor de 0.01-0.02. Lo ves en los logs del componente.
 - La rama `hay-drift` aparece **omitida** (*skipped*): el PSI no superó el umbral de 0.2, así que **no se reentrena nada**.
 
 > [!IMPORTANT]
@@ -681,10 +735,10 @@ python3 ejecutar_pipeline.py --lote solicitudes_lote_drift
 
 Ahora sí recorre todo el camino:
 
-1. `1-calcular-drift-psi`: el PSI máximo sale **muy por encima** de 0.2. El ingreso y el ratio de deuda cambiaron de distribución.
+1. `0-leer-champion` y `1-calcular-drift-psi`: el PSI máximo sale **muy por encima** de 0.2. El ingreso y el ratio de deuda cambiaron de distribución.
 2. `2-reentrenar-challenger`: entrena un modelo nuevo con el lote reciente y lo registra como una **nueva versión** de `fintech_credit_risk`.
-3. `3a`/`3b`: evalúa challenger y champion (v1) sobre **el mismo holdout** del lote nuevo, el 20% de filas que el challenger nunca vio. El challenger debería sacar un AUC claramente mayor: v1 aprendió que el score importa mucho y el plazo poco, y eso dejó de ser cierto.
-4. `4-desplegar-challenger`: despliega la nueva versión en el endpoint y retira la v1. **Tarda 10-20 minutos**, igual que el despliegue del Paso 4.
+3. `3a`/`3b`: evalúa challenger y champion (la v1, leída del historial) sobre **el mismo holdout** del lote nuevo, el 20% de filas que el challenger nunca vio. El challenger debería sacar un AUC claramente mayor: v1 aprendió que el score importa mucho y el plazo poco, y eso dejó de ser cierto.
+4. `4-desplegar-y-promover-challenger`: despliega la nueva versión en el endpoint, retira la v1 y **promueve al challenger a champion**: le mueve el alias `champion` en el registry y agrega una fila a `champion_historial`. **Tarda 10-20 minutos**, igual que el despliegue del Paso 4.
 
 > [!NOTE]
 > Comparar sobre el mismo holdout es la clave del segundo gate. Si evaluaras al challenger sobre sus propios datos de entrenamiento, siempre "ganaría". Un AUC más alto en datos que el modelo ya vio no demuestra nada.
@@ -695,7 +749,26 @@ Cuando termine, vuelve a predecir:
 python3 predecir.py
 ```
 
-La línea `Versión que respondió` ya no dice `1`, sino la versión nueva. En **Model Registry → fintech_credit_risk** vas a ver las dos versiones. Ese historial es tu **auditoría**: qué versión estuvo en producción y desde cuándo.
+La línea `Versión que respondió` ya no dice `1`, sino la versión nueva. En **Model Registry → fintech_credit_risk** vas a ver las dos versiones, con el alias `champion` ahora en la nueva. Y en BigQuery:
+
+```sql
+SELECT * FROM `fintech_ml.champion_historial` ORDER BY fecha;
+```
+
+Ese historial es tu **auditoría**: qué versión estuvo en producción, desde cuándo y con qué datos se entrenó.
+
+### 7.1. El nuevo champion es la nueva referencia
+
+Corre el pipeline **otra vez con el mismo lote con drift**:
+
+```bash
+python3 ejecutar_pipeline.py --lote solicitudes_lote_drift
+```
+
+Esta vez se detiene en el primer gate: el PSI sale bajo y `hay-drift` queda omitida. ¿Por qué, si es el mismo lote que antes disparó el reentrenamiento? Porque `0-leer-champion` ahora devuelve la versión nueva, entrenada **con ese lote**. El drift se mide contra **los datos del modelo que está en producción**, no contra los de la v1. Para el champion actual, ese lote ya no es un cambio: es su mundo.
+
+> [!IMPORTANT]
+> Si el pipeline siguiera comparando contra la v1 y sus datos, cada ejecución detectaría "drift" para siempre y reentrenaría sin parar, y la comparación de AUC enfrentaría a cada challenger con un modelo que ya no está en producción. Leer el champion al inicio de cada ejecución es lo que hace que el ciclo de reentrenamiento **se cierre**.
 
 ---
 
@@ -777,18 +850,7 @@ Model Monitoring está en la consola en **Agent Platform → Models → Monitori
 
 </details>
 
-### Reto 2: Champion dinámico con alias
-
-Hoy el pipeline recibe `modelo_champion` como parámetro fijo (`credit_model_v1`). Después de que v2 gana, una segunda ejecución con drift seguiría comparando contra v1, no contra v2. Modifica `desplegar_ultima_version` para que mueva un alias `champion` a la versión recién desplegada, y haz que el pipeline evalúe contra la versión con ese alias.
-
-<details>
-<summary>👀 Ver Pista de Solución Reto 2</summary>
-
-`ModelRegistry` tiene `add_version_aliases(new_aliases=["champion"], version=...)`. Un alias es único dentro de un modelo, así que asignarlo a la versión nueva lo quita de la anterior. Para evaluar el champion con `ML.EVALUATE` necesitas el **nombre BigQuery ML** de esa versión, no el alias. Una opción es guardar ese nombre como etiqueta (*label*) de la versión en el registry al registrarla.
-
-</details>
-
-### Reto 3: Monitoreo de features en el Feature Store
+### Reto 2: Monitoreo de features en el Feature Store
 
 El SDK del Feature Store tiene `FeatureGroup.create_feature_monitor(...)`, que monitorea la distribución de las features directamente sobre el Feature Group. Explora cómo se compara con el PSI del pipeline: ¿qué ventaja tiene monitorear en el Feature Store, que ven todos los modelos que usan esas features, en vez de dentro del pipeline de un solo modelo?
 
@@ -801,6 +863,7 @@ El SDK del Feature Store tiene `FeatureGroup.create_feature_monitor(...)`, que m
 - **Un endpoint factura por hora mientras exista**, aunque nadie lo use. Es el recurso que más importa limpiar.
 - **Data drift ≠ concept drift.** El PSI detecta que cambiaron las entradas. Saber si el modelo empeoró requiere etiquetas, y esas llegan tarde.
 - **Un buen pipeline de reentrenamiento tiene quality gates**: no reentrena si no hay drift, y no despliega si el challenger no le gana al champion **en el mismo holdout**.
+- **Cuando el challenger gana, pasa a ser el champion:** se le mueve el alias `champion`, y desde entonces es la referencia tanto para comparar AUC como para medir drift.
 - **Pipelines de la plataforma = Kubeflow Pipelines serverless**: el estándar abierto (KFP) sin administrar Kubernetes, ejecutable a mano o con cron.
 - **Vertex AI ahora se llama Gemini Enterprise Agent Platform** (abril 2026), pero la API, el SDK, `gcloud ai` y los roles IAM conservan el nombre "aiplatform".
 
