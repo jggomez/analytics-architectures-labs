@@ -727,6 +727,10 @@ Abre el enlace que imprime, o ve a **Agent Platform → Models → Pipelines**. 
 
 ---
 
+<img width="951" height="697" alt="Screenshot 2026-10-01 at 10 36 47 p m" src="https://github.com/user-attachments/assets/4ee1e348-f253-4f14-95b2-920a6e950e83" />
+
+---
+
 ## Paso 7 — Pipeline con el Lote con Drift (25 min)
 
 ```bash
