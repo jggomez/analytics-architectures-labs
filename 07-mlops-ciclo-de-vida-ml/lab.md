@@ -824,6 +824,10 @@ Esta vez se detiene en el primer gate: el PSI sale bajo y `hay-drift` queda omit
 
 ---
 
+<img width="827" height="696" alt="Screenshot 2026-10-01 at 10 43 44 p m" src="https://github.com/user-attachments/assets/63c928e0-9360-49bb-a6dc-b3b8b5a5d719" />
+
+---
+
 ## Paso 8 — Programar el Pipeline con Cron (5 min)
 
 En producción no lanzarías el pipeline a mano. Lo programas:
