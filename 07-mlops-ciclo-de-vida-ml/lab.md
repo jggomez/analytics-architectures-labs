@@ -319,23 +319,42 @@ Verifícalo en la consola: **Agent Platform → Models → Model Registry** → 
 
 ```bash
 cat <<'EOF' > desplegar_v1.py
-"""Crea el endpoint y despliega la versión v1 del modelo (alias 'v1' del Model Registry)."""
+"""Crea (o reutiliza) el endpoint y despliega la versión v1 del modelo (alias 'v1')."""
 import os
 
 from google.cloud import aiplatform
+from google.cloud.aiplatform_v1 import EndpointServiceClient
+from google.cloud.aiplatform_v1.types import DedicatedResources, DeployedModel, MachineSpec
 
-aiplatform.init(project=os.environ["PROJECT_ID"], location=os.environ["REGION"])
+PROJECT_ID = os.environ["PROJECT_ID"]
+REGION = os.environ["REGION"]
+aiplatform.init(project=PROJECT_ID, location=REGION)
 
-endpoint = aiplatform.Endpoint.create(display_name="fintech-credit-endpoint")
+existentes = aiplatform.Endpoint.list(filter='display_name="fintech-credit-endpoint"')
+endpoint = existentes[0] if existentes else aiplatform.Endpoint.create(
+    display_name="fintech-credit-endpoint")
 modelo = aiplatform.Model(model_name="fintech_credit_risk@v1")
 
-modelo.deploy(
-    endpoint=endpoint,
-    machine_type="n1-standard-2",
-    min_replica_count=1,
-    max_replica_count=1,
-    traffic_percentage=100,  # el default del SDK es 0: sin esto, el modelo no recibe tráfico
+# Se usa la API de bajo nivel porque el SDK de alto nivel (modelo.deploy) no permite
+# desactivar las explicaciones, y con explicaciones activas el despliegue de modelos
+# de BigQuery ML falla (bug conocido; ver la nota debajo de este bloque).
+cliente = EndpointServiceClient(client_options={"api_endpoint": f"{REGION}-aiplatform.googleapis.com"})
+operacion = cliente.deploy_model(
+    endpoint=endpoint.resource_name,
+    deployed_model=DeployedModel(
+        model=modelo.versioned_resource_name,
+        display_name="fintech-credit-v1",
+        disable_explanations=True,
+        dedicated_resources=DedicatedResources(
+            machine_spec=MachineSpec(machine_type="n1-standard-2"),
+            min_replica_count=1,
+            max_replica_count=1,
+        ),
+    ),
+    traffic_split={"0": 100},  # "0" = el modelo que se está desplegando: recibe el 100% del tráfico
 )
+print("Desplegando (tarda 10-20 minutos)...")
+operacion.result(timeout=3600)
 print(f"Endpoint listo: {endpoint.resource_name}")
 EOF
 
@@ -344,6 +363,13 @@ python3 desplegar_v1.py
 
 > [!NOTE]
 > **El despliegue tarda entre 10 y 20 minutos**: la plataforma aprovisiona la máquina y carga el modelo. Mientras esperas, lee la [teoría §3](teoria.md#3-las-piezas-del-ciclo-de-vida) o adelanta el Paso 5 en otra pestaña de Cloud Shell. Un modelo de BigQuery ML registrado se despliega **sin contenedor propio**: la plataforma se encarga de servirlo.
+
+> [!WARNING]
+> **Por qué `disable_explanations=True` y la API de bajo nivel.** Si despliegas un modelo de BigQuery ML con el SDK de alto nivel (`modelo.deploy(...)`), el despliegue falla con:
+> `400 Error occurred in Explanation preprocessing ... NodeDef mentions attr 'debug_name' not in Op<name=VarHandleOp ...>`.
+> Es un **bug conocido de la plataforma** desde 2024 ([issue #2723 en vertex-ai-samples](https://github.com/GoogleCloudPlatform/vertex-ai-samples/issues/2723), [issue tracker 337998773](https://issuetracker.google.com/issues/337998773)). Al desplegar con explicaciones activas (*explainable AI*), la plataforma intenta leer el modelo exportado por BigQuery ML con una versión de TensorFlow más vieja que la que lo generó. Desplegar **desde la consola** funciona, porque no activa las explicaciones. Por eso el script usa la API de bajo nivel con `disable_explanations=True`: es lo mismo que hace la consola.
+>
+> Si en un intento anterior el script ya había creado el endpoint, esta versión lo **reutiliza** en vez de crear uno duplicado.
 
 Cuando termine, envía dos solicitudes de prueba, una de bajo riesgo y una de alto riesgo:
 
@@ -497,6 +523,8 @@ def desplegar_ultima_version(project: str, location: str, vertex_model_id: str,
                              endpoint_display_name: str) -> str:
     from google.cloud import aiplatform
     from google.cloud.aiplatform import ModelRegistry
+    from google.cloud.aiplatform_v1 import EndpointServiceClient
+    from google.cloud.aiplatform_v1.types import DedicatedResources, DeployedModel, MachineSpec
 
     aiplatform.init(project=project, location=location)
     registry = ModelRegistry(model=vertex_model_id)
@@ -506,13 +534,24 @@ def desplegar_ultima_version(project: str, location: str, vertex_model_id: str,
     endpoint = aiplatform.Endpoint.list(filter=f'display_name="{endpoint_display_name}"')[0]
     anteriores = [m.id for m in endpoint.list_models()]
 
-    modelo.deploy(
-        endpoint=endpoint,
-        machine_type="n1-standard-2",
-        min_replica_count=1,
-        max_replica_count=1,
-        traffic_percentage=100,
-    )
+    # API de bajo nivel con disable_explanations=True: con explicaciones activas, el
+    # despliegue de modelos de BigQuery ML falla (ver la advertencia del Paso 4).
+    cliente = EndpointServiceClient(
+        client_options={"api_endpoint": f"{location}-aiplatform.googleapis.com"})
+    cliente.deploy_model(
+        endpoint=endpoint.resource_name,
+        deployed_model=DeployedModel(
+            model=modelo.versioned_resource_name,
+            display_name=f"fintech-credit-v{ultima.version_id}",
+            disable_explanations=True,
+            dedicated_resources=DedicatedResources(
+                machine_spec=MachineSpec(machine_type="n1-standard-2"),
+                min_replica_count=1,
+                max_replica_count=1,
+            ),
+        ),
+        traffic_split={"0": 100},  # todo el tráfico a la versión nueva; las anteriores quedan en 0%
+    ).result(timeout=3600)
     for deployed_model_id in anteriores:
         endpoint.undeploy(deployed_model_id=deployed_model_id)
 
