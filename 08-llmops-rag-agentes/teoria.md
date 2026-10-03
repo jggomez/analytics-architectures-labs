@@ -234,7 +234,7 @@ Hay dos estrategias, con un trade-off claro:
 | **Fijar la versión** (ej. `gemini-3.5-flash`) | Comportamiento reproducible; las evaluaciones siguen siendo válidas | Hay que migrar antes de la fecha de retiro |
 | **Usar un alias** (ej. `gemini-flash-latest`) | Nunca se rompe por un retiro | El comportamiento **cambia sin que cambies tu código**, y tus evaluaciones pasadas dejan de describir lo que corre en producción |
 
-La práctica recomendada es la misma lógica de champion/challenger del Módulo 07: **fijar versiones** en producción, y cuando sale un modelo nuevo, **evaluarlo contra el set dorado** antes de cambiar. El Lab 08 usa ambas estrategias a propósito (versión fija en BigQuery, alias en el agente) y registra en la observabilidad qué versión respondió realmente.
+La práctica recomendada es la misma lógica de champion/challenger del Módulo 07: **fijar versiones** en producción, y cuando sale un modelo nuevo, **evaluarlo contra el set dorado** antes de cambiar. El Lab 08 fija la versión en BigQuery y en el agente, y registra en la observabilidad qué versión respondió realmente.
 
 ### 8.2. Evaluación
 
@@ -337,7 +337,7 @@ Los conceptos de este módulo existen en todas las plataformas, con nombres dist
 | Índice vectorial | **Sin índice** (búsqueda exacta) | Índice IVF | El manual tiene 12 chunks; BigQuery exige 5,000 filas para crear un índice. El índice queda como reto |
 | Dónde corre el agente | **Local en Cloud Shell** (`adk web`) | Agent Runtime | $0 de infraestructura; desplegar queda como reto |
 | Documentos | **Manual sintético** | Dataset público | Permite plantar respuestas exactas y preguntas sin respuesta para evaluar |
-| Modelo | **Versión fija en BigQuery, alias en el agente** | Una sola estrategia | Muestra en vivo el trade-off de §8.1 |
+| Modelo | **Versión fija** (`gemini-3.5-flash`) en BigQuery y en el agente | Alias que apunta al más nuevo | Comportamiento reproducible y evaluaciones válidas (§8.1) |
 | Evaluación | **SQL** (recall@3 + LLM-juez con `AI.GENERATE_TEXT`) | `adk eval`, frameworks como RAGAS | Transparente, en el mismo lugar que los datos; `adk eval` queda como reto para evaluar la elección de herramientas |
 
 ---
