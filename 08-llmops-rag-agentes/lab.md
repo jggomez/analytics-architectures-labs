@@ -501,19 +501,19 @@ FROM AI.GENERATE_TEXT(
 SELECT
   COUNT(*) AS respuestas,
   COUNTIF(REGEXP_CONTAINS(UPPER(veredicto), r'^\s*S[IÍ]\b')) AS fundamentadas,
-  COUNTIF(CONTAINS_SUBSTR(respuesta, dato_clave)) AS contienen_dato_clave
+  COUNTIF(STRPOS(LOWER(respuesta), LOWER(dato_clave)) > 0) AS contienen_dato_clave
 FROM `fintech_genai.eval_juez`;
 
 -- Revisa una por una las que fallaron
 SELECT pregunta, dato_clave, respuesta, veredicto
 FROM `fintech_genai.eval_juez`
 WHERE NOT REGEXP_CONTAINS(UPPER(veredicto), r'^\s*S[IÍ]\b')
-   OR NOT CONTAINS_SUBSTR(respuesta, dato_clave);
+   OR STRPOS(LOWER(respuesta), LOWER(dato_clave)) = 0;
 ```
 
 > [!NOTE]
 > - El juez acepta "SI" o "SÍ": por eso la expresión regular `S[IÍ]` y no un `= 'SI'`. Un detalle así, mal resuelto, arruina una métrica sin dar ningún error.
-> - **Un LLM juez también se equivoca.** Por eso se combina con una verificación determinística (`CONTAINS_SUBSTR` del dato clave) y con revisión humana de los casos que fallan. La evaluación de un LLM nunca es 100% automática.
+> - **Un LLM juez también se equivoca.** Por eso se combina con una verificación determinística (buscar el dato clave en la respuesta con `STRPOS`) y con revisión humana de los casos que fallan. La evaluación de un LLM nunca es 100% automática.
 
 Ahora tienes una **línea base**. Cambia algo, por ejemplo `top_k => 1` en vez de 3, o quita la instrucción "usa SOLO el contexto" del prompt, vuelve a correr 5.2 a 5.4 y compara los números. Eso es **evaluación de regresión**, el corazón de LLMOps.
 
