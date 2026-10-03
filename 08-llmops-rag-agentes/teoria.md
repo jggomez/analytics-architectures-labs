@@ -250,6 +250,49 @@ En producción, cada interacción debería registrar: la pregunta, los chunks re
 
 El registro se organiza como **trazas**: una traza por pregunta, con un *span* por cada llamada al modelo y a cada herramienta, igual que en la observabilidad de microservicios. **OpenTelemetry** define convenciones semánticas para IA generativa, y la mayoría de las herramientas de observabilidad de LLMs las adoptan, lo que evita quedar atado a un proveedor. En el lab, el plugin de analítica de ADK escribe esas trazas en una tabla de BigQuery, donde se consultan con SQL.
 
+### 8.4. Automatizar el Ciclo: de Medir a Mano a un Sistema
+
+Evaluar y observar a mano sirve para aprender y para un prototipo, pero no escala: nadie va a correr el set dorado cada vez que alguien toca un prompt. Igual que en MLOps (Módulo 07, §5), la madurez se mide por **cuánto del ciclo está automatizado**:
+
+| Nivel | Evaluación | Observabilidad | Decisión de cambiar |
+|---|---|---|---|
+| **0 — Manual** | Alguien prueba unas preguntas a ojo | Logs sueltos, si los hay | "Me pareció que respondía mejor" |
+| **1 — Medido** | Set dorado y métricas, corridos a mano | Cada interacción registrada automáticamente; consultas ad hoc | Una persona compara los números y decide |
+| **2 — Automatizado** | La evaluación corre **sola** ante cada cambio y de forma periódica, y actúa como *gate* | Dashboard y alertas sobre costo, latencia y calidad | El sistema bloquea los cambios que empeoran; las personas revisan los casos dudosos |
+
+**El Lab 08 llega al nivel 1:** el registro es automático (el plugin de ADK escribe cada llamada en BigQuery), pero la evaluación y el análisis los corres tú. El nivel 2 se construye con las mismas piezas:
+
+```
+NIVEL 2: EL CICLO DE LLMOPS AUTOMATIZADO
+
+ Cambio (prompt, modelo,      ┌──────────────────────────────┐
+ chunking, top-k, herramienta)│ GATE DE EVALUACIÓN (en CI)    │
+ ───────────────────────────► │ set dorado: recall@k,          │── ¿no empeora? ──► despliegue
+                              │ fundamentación, dato clave,    │       │
+                              │ herramienta correcta           │       └─ no ──► bloqueado
+                              └──────────────────────────────┘
+ Producción ─► trazas ─► ┌─────────────────────────────────────────────┐
+                         │ Evaluación periódica (consulta programada)   │
+                         │ Dashboard: costo/día, tokens por pregunta,   │
+                         │   latencia, herramientas, preguntas sin      │
+                         │   respuesta                                  │
+                         │ Alertas: costo, latencia o "no sé" > umbral  │
+                         └──────────────────────┬──────────────────────┘
+                                                ▼
+                         Revisión humana ─► nuevas preguntas doradas
+                                            y documentos faltantes ─► (vuelve al gate)
+```
+
+Las cinco piezas, de la más urgente a la más avanzada:
+
+1. **Evaluación como gate.** Cada cambio que afecta el comportamiento dispara la evaluación del set dorado en el sistema de CI, como un test. Si una métrica baja de su umbral (o empeora respecto a la versión en producción), el cambio no se despliega. Es champion/challenger aplicado a prompts y modelos.
+2. **Evaluación periódica.** El set dorado corre también con una programación, aunque nadie cambie nada. Así se detectan los cambios que no vienen de tu código: un proveedor que mueve un alias, documentos que quedan desactualizados o un índice que se degradó.
+3. **Dashboard.** Un tablero sobre las trazas con costo por día, tokens por pregunta, latencia, herramientas más usadas, tasa de errores y tasa de "no está en el manual".
+4. **Alertas.** Umbrales sobre esas mismas métricas, para que el equipo se entere antes que los usuarios: un ciclo de herramientas que dispara el costo, una latencia que se duplica o una subida de preguntas sin respuesta.
+5. **Ciclo de mejora con las preguntas reales.** Las preguntas de producción que el sistema respondió mal o no supo responder se revisan y se convierten en preguntas doradas nuevas o en documentos que faltaban. Así el set dorado crece con lo que de verdad preguntan los usuarios.
+
+Una advertencia: un gate automático depende de que el set dorado sea **representativo**. Si solo tiene 9 preguntas, un cambio puede pasar el gate y empeorar en todo lo demás. El set dorado se cuida y se amplía como cualquier otro activo de datos.
+
 ---
 
 ## 9. Riesgos y Seguridad
@@ -339,6 +382,7 @@ Los conceptos de este módulo existen en todas las plataformas, con nombres dist
 | Documentos | **Manual sintético** | Dataset público | Permite plantar respuestas exactas y preguntas sin respuesta para evaluar |
 | Modelo | **Versión fija** (`gemini-3.5-flash`) en BigQuery y en el agente | Alias que apunta al más nuevo | Comportamiento reproducible y evaluaciones válidas (§8.1) |
 | Evaluación | **SQL** (recall@3 + LLM-juez con `AI.GENERATE_TEXT`) | `adk eval`, frameworks como RAGAS | Transparente, en el mismo lugar que los datos; `adk eval` queda como reto para evaluar la elección de herramientas |
+| Automatización | **Nivel 1:** registro automático, evaluación y análisis a mano | Gate de evaluación en CI, evaluación programada, dashboard y alertas (§8.4) | El objetivo del taller es aprender a medir; automatizar usa las mismas consultas y queda como siguiente paso |
 
 ---
 
