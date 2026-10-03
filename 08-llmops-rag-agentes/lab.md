@@ -409,6 +409,8 @@ Detén `adk web` con `Ctrl+C` antes del Paso 5.
 
 ### 5.1. El set dorado
 
+Ve a BigQuery Studio
+
 ```sql
 CREATE OR REPLACE TABLE `fintech_genai.preguntas_doradas`
   (pregunta_id INT64, pregunta STRING, chunk_esperado STRING, dato_clave STRING);
