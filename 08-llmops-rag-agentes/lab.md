@@ -80,7 +80,7 @@ Al terminar este laboratorio serás capaz de:
 
 ---
 
-### Mapa del Laboratorio (~120 minutos)
+### Mapa del Laboratorio (~120 minutos + bonus)
 
 ```
 Paso 0  (10 min)  Entorno: variables, APIs, datasets, Python
@@ -91,6 +91,7 @@ Paso 4  (25 min)  Agente ADK con dos herramientas + plugin de observabilidad
 Paso 5  (20 min)  LLMOps (evaluación): preguntas doradas, recall@3 y LLM-juez
 Paso 6  (10 min)  Seguridad: prompt injection y mínimo privilegio
 Paso 7  (10 min)  LLMOps (observabilidad): tokens, latencia y costo por pregunta
+Bonus   (15 min)  Automatización: evaluación diaria programada, con historial y alerta por correo
 Paso 8  (5 min)   Limpieza + Retos Opcionales
 ```
 
@@ -572,7 +573,171 @@ La última consulta muestra que **una sola pregunta puede generar varias llamada
 
 ---
 
+## Bonus — Automatizar la Evaluación: Todos los Días, con Historial y Alerta (15 min)
+
+Hasta aquí, la evaluación del Paso 5 la corres tú. En producción nadie se acuerda de correrla, y justo los cambios que no vienen de tu código son los que más importa detectar: documentos que quedan desactualizados, un índice que se degrada o un modelo que el proveedor cambia. En este bonus la evaluación **se corre sola todos los días**, **guarda su historial** y **te avisa por correo** si alguna métrica baja de un umbral. Es el nivel 2 de madurez de la [teoría §8.4](teoria.md#84-automatizar-el-ciclo-de-medir-a-mano-a-un-sistema), con las mismas consultas del Paso 5.
+
+```
+TODOS LOS DÍAS 06:00 (consulta programada de BigQuery)
+  set dorado ─► recall@3 ─► respuestas ─► LLM-juez ─► INSERT en eval_historial
+                                                          │
+                                       ¿alguna métrica < umbral?
+                                          ├─ no ─► la ejecución termina bien
+                                          └─ sí ─► RAISE: la ejecución falla ─► correo de alerta
+```
+
+### B.1. La tabla de historial
+
+```bash
+gcloud services enable bigquerydatatransfer.googleapis.com
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS `fintech_genai.eval_historial` (
+  fecha TIMESTAMP,
+  modelo STRING,
+  preguntas INT64,
+  recall_at_3 FLOAT64,
+  tasa_fundamentadas FLOAT64,
+  tasa_dato_clave FLOAT64
+);
+```
+
+### B.2. La evaluación como un solo script
+
+Es el Paso 5 completo (5.2 a 5.4) en un solo script de SQL, más dos cosas nuevas: **guarda el resultado** en `eval_historial` y **falla a propósito** con `RAISE` si alguna métrica queda bajo el umbral. Guárdalo en Cloud Shell:
+
+```bash
+cd ~/lab08
+cat <<'EOF' > eval_diaria.sql
+-- Evaluación diaria del RAG: set dorado + historial + alerta si empeora
+DECLARE umbral FLOAT64 DEFAULT 0.8;
+DECLARE recall_3, tasa_fundamentadas, tasa_dato_clave FLOAT64;
+
+-- 1. Recuperación (igual que el Paso 5.2)
+CREATE OR REPLACE TABLE `fintech_genai.eval_recuperacion` AS
+SELECT
+  query.pregunta_id,
+  ANY_VALUE(query.chunk_esperado) AS chunk_esperado,
+  ARRAY_AGG(base.chunk_id ORDER BY distance) AS recuperados,
+  STRING_AGG(FORMAT('[%s] %s: %s', base.chunk_id, base.seccion, base.texto), '\n' ORDER BY distance) AS contexto
+FROM VECTOR_SEARCH(
+  TABLE `fintech_genai.politicas_embeddings`, 'embedding',
+  (SELECT pregunta_id, chunk_esperado, embedding
+   FROM AI.GENERATE_EMBEDDING(
+     MODEL `fintech_genai.modelo_embeddings`,
+     (SELECT pregunta_id, chunk_esperado, pregunta AS content
+      FROM `fintech_genai.preguntas_doradas`))
+   WHERE LENGTH(status) = 0),
+  top_k => 3, distance_type => 'COSINE')
+GROUP BY query.pregunta_id;
+
+-- 2. Respuestas (igual que el Paso 5.3)
+CREATE OR REPLACE TABLE `fintech_genai.eval_respuestas` AS
+SELECT pregunta_id, pregunta, dato_clave, contexto, result AS respuesta
+FROM AI.GENERATE_TEXT(
+  MODEL `fintech_genai.modelo_gemini`,
+  (
+    SELECT p.pregunta_id, p.pregunta, p.dato_clave, r.contexto,
+      CONCAT(
+        'Eres un asistente de crédito de FinTechCo. Responde la pregunta usando SOLO el contexto. ',
+        'Si el contexto no contiene la respuesta, responde exactamente: No está en el manual. ',
+        'Cita el chunk_id entre corchetes.\n\nPregunta: ', p.pregunta,
+        '\n\nContexto:\n', r.contexto) AS prompt
+    FROM `fintech_genai.preguntas_doradas` p
+    JOIN `fintech_genai.eval_recuperacion` r USING (pregunta_id)
+  ),
+  STRUCT(0.0 AS temperature, 1024 AS max_output_tokens));
+
+-- 3. LLM-juez (igual que el Paso 5.4)
+CREATE OR REPLACE TABLE `fintech_genai.eval_juez` AS
+SELECT pregunta_id, pregunta, dato_clave, respuesta, result AS veredicto
+FROM AI.GENERATE_TEXT(
+  MODEL `fintech_genai.modelo_gemini`,
+  (
+    SELECT *, CONCAT(
+      'Eres un evaluador estricto. Contesta solo SI o NO. ',
+      '¿Toda la información de la RESPUESTA está respaldada por el CONTEXTO? ',
+      'Si la RESPUESTA dice "No está en el manual" y el CONTEXTO efectivamente no contiene la respuesta, contesta SI.\n\n',
+      'CONTEXTO:\n', contexto, '\n\nRESPUESTA:\n', respuesta) AS prompt
+    FROM `fintech_genai.eval_respuestas`
+  ),
+  STRUCT(0.0 AS temperature, 1024 AS max_output_tokens));
+
+-- 4. Métricas del día
+SET recall_3 = (
+  SELECT SAFE_DIVIDE(COUNTIF(chunk_esperado IN UNNEST(recuperados)), COUNTIF(chunk_esperado IS NOT NULL))
+  FROM `fintech_genai.eval_recuperacion`);
+SET (tasa_fundamentadas, tasa_dato_clave) = (
+  SELECT AS STRUCT
+    SAFE_DIVIDE(COUNTIF(REGEXP_CONTAINS(UPPER(veredicto), r'^\s*S[IÍ]\b')), COUNT(*)),
+    SAFE_DIVIDE(COUNTIF(STRPOS(LOWER(respuesta), LOWER(dato_clave)) > 0), COUNT(*))
+  FROM `fintech_genai.eval_juez`);
+
+-- 5. Historial: se guarda siempre, también los días malos
+INSERT INTO `fintech_genai.eval_historial`
+SELECT CURRENT_TIMESTAMP(), 'gemini-3.5-flash', (SELECT COUNT(*) FROM `fintech_genai.eval_juez`),
+       ROUND(recall_3, 3), ROUND(tasa_fundamentadas, 3), ROUND(tasa_dato_clave, 3);
+
+-- 6. Alerta: si algo empeoró, la ejecución falla (y la consulta programada envía un correo)
+IF recall_3 < umbral OR tasa_fundamentadas < umbral OR tasa_dato_clave < umbral THEN
+  RAISE USING MESSAGE = FORMAT(
+    'Evaluación del RAG bajo el umbral %.2f: recall@3=%.2f, fundamentadas=%.2f, dato_clave=%.2f',
+    umbral, recall_3, tasa_fundamentadas, tasa_dato_clave);
+END IF;
+EOF
+```
+
+Córrelo una vez a mano para comprobar que funciona:
+
+```bash
+bq query --location=US --use_legacy_sql=false < eval_diaria.sql
+```
+
+Debería terminar sin error y dejar la primera fila en el historial. Ahora **prueba la alerta**: corre el mismo script con un umbral imposible de cumplir.
+
+```bash
+sed 's/DEFAULT 0.8/DEFAULT 1.01/' eval_diaria.sql | bq query --location=US --use_legacy_sql=false
+```
+
+Esta vez termina con error: `Evaluación del RAG bajo el umbral 1.01: ...`. Ese error es la alerta. Fíjate en que la fila del día **igual quedó guardada**, porque el `INSERT` va antes del `RAISE`:
+
+```sql
+SELECT * FROM `fintech_genai.eval_historial` ORDER BY fecha;
+```
+
+### B.3. Programarla, con aviso por correo
+
+Una **consulta programada** de BigQuery corre un script SQL con una frecuencia fija, sin servidores ni orquestador. Y puede **enviar un correo cuando una ejecución falla**: como el script falla a propósito si las métricas bajan, ese correo es la alerta.
+
+1. Muestra el script y cópialo completo: `cat eval_diaria.sql`.
+2. En **BigQuery Studio**, abre una pestaña de consulta nueva y pega el script.
+3. Haz clic en **Schedule** (Programar) → **Create new scheduled query**.
+4. Configura:
+   - **Name:** `fintech-eval-rag-diaria`
+   - **Repeat frequency:** `Days`, a la hora que prefieras.
+   - **Location:** `US` (multi-región), la misma de los datasets.
+   - **Notification options:** activa **Send email notifications**. El correo llega a tu cuenta cuando una ejecución falla.
+5. Guarda. Si la consola pide autorizar la consulta programada con tu cuenta, acepta: la consulta corre con tus permisos.
+
+Para no esperar al día siguiente, abre **BigQuery → Scheduled queries** → `fintech-eval-rag-diaria` y usa **Run transfer now**. Cuando termine, verás una fila nueva en `eval_historial`.
+
+> [!IMPORTANT]
+> Esto convierte la evaluación en un proceso, no en un evento:
+> - **El historial muestra tendencias.** Un recall que baja de 0.95 a 0.85 en un mes avisa que los documentos se están quedando cortos, antes de que alguien se queje.
+> - **La alerta llega sola.** Nadie tiene que acordarse de revisar.
+> - **Es la misma evaluación del Paso 5.** Automatizar no cambió la medición: solo la puso a correr sin ti.
+>
+> Con 9 preguntas doradas, la alerta es frágil: una sola respuesta que cambia mueve la tasa más de 10 puntos. En producción, el set dorado tiene decenas o cientos de preguntas.
+
+> [!WARNING]
+> La consulta programada **sigue corriendo todos los días**, y cada ejecución llama a Gemini unas 20 veces, hasta que la borres. **Borrar los datasets no la borra:** quedaría fallando y enviándote un correo diario. El Paso 8 la elimina.
+
+---
+
 ## Paso 8 — Limpieza (5 min)
+
+Primero borra la consulta programada del bonus, si la creaste: **BigQuery → Scheduled queries** → `fintech-eval-rag-diaria` → **Delete**. Después:
 
 ```bash
 bq rm --recursive --force "${PROJECT_ID}:fintech_genai"
@@ -625,6 +790,18 @@ El Paso 5 evalúa el RAG en SQL. El agente completo (que además elige herramien
 
 Despliega `agente_credito` en **Agent Runtime** (el runtime gestionado de la plataforma, antes "Agent Engine") para que tenga un endpoint permanente. Ten en cuenta que, a diferencia de `adk web` en Cloud Shell, un agente desplegado tiene **costo mientras exista**: bórralo al terminar.
 
+
+### Reto 5: Un gate antes de cambiar de modelo
+
+Cuando salga un modelo nuevo, ¿lo adoptas sin más? Aplica champion/challenger del Módulo 07 a los LLMs: crea un segundo modelo remoto con el modelo candidato, corre la evaluación del Paso 5 con cada uno y cambia `fintech_genai.modelo_gemini` **solo si el candidato no empeora ninguna métrica**.
+
+<details>
+<summary>👀 Ver Pista de Solución Reto 5</summary>
+
+Crea `fintech_genai.modelo_candidato` con `CREATE OR REPLACE MODEL ... REMOTE WITH CONNECTION DEFAULT OPTIONS (ENDPOINT = '<modelo nuevo>')`. Parametriza `eval_diaria.sql` para que el nombre del modelo sea una variable (por ejemplo, generando dos versiones del script con `sed`), quita el `RAISE`, y guarda en `eval_historial` una fila por modelo. Compara las dos filas: si el candidato iguala o supera al actual en las tres métricas, recrea `modelo_gemini` con el nuevo `ENDPOINT`. Ese "solo si no empeora" es el *quality gate*; en un sistema real lo ejecuta el CI antes de desplegar.
+
+</details>
+
 ---
 
 ## Resumen de lo Aprendido
@@ -633,6 +810,7 @@ Despliega `agente_credito` en **Agent Runtime** (el runtime gestionado de la pla
 - **RAG = recuperar + generar.** La calidad depende primero de la recuperación (chunking, embeddings, top-k), y solo después del modelo generador.
 - **Un agente decide qué herramienta usar.** Las herramientas son funciones con buenas docstrings; el modelo nunca debería escribir SQL libre contra tus datos.
 - **La seguridad está en las herramientas, no en el prompt.** Mínimo privilegio, consultas parametrizadas y solo agregados.
+- **Automatizar la evaluación la convierte en un proceso:** una consulta programada corre el set dorado cada día, guarda el historial y avisa por correo si una métrica baja del umbral.
 - **LLMOps = evaluar y observar.** Set dorado + recall@k + groundedness con LLM-juez para cada cambio; tokens, latencia, herramientas y versión del modelo registrados en BigQuery para producción.
 - **Los modelos se retiran cada pocos meses.** Fijar versiones (o vigilar los alias) y re-evaluar antes de cambiar es parte del trabajo: `gemini-2.5-flash` se retira el 20 de octubre de 2026.
 

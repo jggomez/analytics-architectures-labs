@@ -260,7 +260,7 @@ Evaluar y observar a mano sirve para aprender y para un prototipo, pero no escal
 | **1 — Medido** | Set dorado y métricas, corridos a mano | Cada interacción registrada automáticamente; consultas ad hoc | Una persona compara los números y decide |
 | **2 — Automatizado** | La evaluación corre **sola** ante cada cambio y de forma periódica, y actúa como *gate* | Dashboard y alertas sobre costo, latencia y calidad | El sistema bloquea los cambios que empeoran; las personas revisan los casos dudosos |
 
-**El Lab 08 llega al nivel 1:** el registro es automático (el plugin de ADK escribe cada llamada en BigQuery), pero la evaluación y el análisis los corres tú. El nivel 2 se construye con las mismas piezas:
+**Los pasos principales del Lab 08 llegan al nivel 1:** el registro es automático (el plugin de ADK escribe cada llamada en BigQuery), pero la evaluación y el análisis los corres tú. **El bonus del lab da el primer paso al nivel 2:** la evaluación corre sola cada día como consulta programada, guarda su historial y avisa por correo si una métrica baja del umbral. El nivel 2 completo se construye con las mismas piezas:
 
 ```
 NIVEL 2: EL CICLO DE LLMOPS AUTOMATIZADO
@@ -382,7 +382,7 @@ Los conceptos de este módulo existen en todas las plataformas, con nombres dist
 | Documentos | **Manual sintético** | Dataset público | Permite plantar respuestas exactas y preguntas sin respuesta para evaluar |
 | Modelo | **Versión fija** (`gemini-3.5-flash`) en BigQuery y en el agente | Alias que apunta al más nuevo | Comportamiento reproducible y evaluaciones válidas (§8.1) |
 | Evaluación | **SQL** (recall@3 + LLM-juez con `AI.GENERATE_TEXT`) | `adk eval`, frameworks como RAGAS | Transparente, en el mismo lugar que los datos; `adk eval` queda como reto para evaluar la elección de herramientas |
-| Automatización | **Nivel 1:** registro automático, evaluación y análisis a mano | Gate de evaluación en CI, evaluación programada, dashboard y alertas (§8.4) | El objetivo del taller es aprender a medir; automatizar usa las mismas consultas y queda como siguiente paso |
+| Automatización | **Nivel 1** en los pasos principales; el **bonus** agrega evaluación diaria programada con historial y alerta por correo | Gate de evaluación en CI y dashboard (§8.4) | El objetivo central es aprender a medir; el bonus muestra que automatizar usa las mismas consultas. El gate antes de cambiar de modelo queda como Reto 5 |
 
 ---
 
