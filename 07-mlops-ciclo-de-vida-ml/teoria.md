@@ -126,7 +126,7 @@ El ciclo de vida de ML no es una línea, sino un **bucle**: el monitoreo de un m
 |---|---|---|---|---|
 | **1. Problema y métricas** | Traducir una necesidad de negocio en una tarea de ML, y definir cómo se mide el éxito (técnico y de negocio) | ¿Qué predecimos, para qué decisión, y cuánto error es aceptable? | Definición del problema, métrica objetivo | Predecir impago de un crédito; métrica AUC |
 | **2. Datos y features** | Ingestar, validar y transformar datos; diseñar y calcular las features | ¿Tenemos datos suficientes, correctos y sin fuga del futuro? | Tablas de features con definición única | Paso 1 (datos) y Paso 2 (Feature Store) |
-| **3. Experimentación y entrenamiento** | Probar algoritmos, features e hiperparámetros, registrando cada intento | ¿Qué combinación funciona mejor, y la podemos repetir? | Experimentos registrados; un modelo candidato | Paso 3 (`CREATE MODEL`) |
+| **3. Experimentación y entrenamiento** | Probar algoritmos, features e hiperparámetros, registrando cada intento | ¿Qué combinación funciona mejor, y la podemos repetir? | Experimentos registrados; un modelo candidato | Paso 3.1 (experimento con 4 candidatos) |
 | **4. Evaluación y validación** | Medir el modelo en datos que no vio; compararlo con el modelo actual; revisar sesgos | ¿Es suficientemente bueno, y mejor que lo que ya hay? | Métricas de evaluación; decisión de aprobar o no | `ML.EVALUATE`; comparación de AUC en el pipeline |
 | **5. Registro** | Guardar el modelo como versión, con métricas y linaje | ¿Qué versión es esta, de dónde salió y quién la aprobó? | Versión en el Model Registry | Paso 3 (`model_registry`) |
 | **6. Despliegue y serving** | Poner el modelo a responder predicciones (online o batch) | ¿Cómo lo consumen las aplicaciones, con qué latencia y costo? | Endpoint o job de predicción | Paso 4 (endpoint) |
@@ -213,7 +213,15 @@ Antes de llegar a un buen modelo, un científico de datos prueba decenas de comb
 
 Sin él, el mejor modelo de la semana pasada es imposible de reproducir ("¿qué `learning_rate` usé?"). Con él, se pueden comparar los intentos lado a lado y elegir con evidencia. Es la memoria de la fase 3, y el punto de partida del linaje que después guarda el registry.
 
-El Lab 07 no lo usa explícitamente: entrena un solo tipo de modelo con SQL y deja que el registry guarde las versiones. En un proyecto real con exploración es de las primeras piezas que conviene adoptar, porque es barata y su ausencia duele pronto.
+Un experimento y un registry guardan cosas distintas, y conviene no mezclarlos:
+
+| | Experimento | Model Registry |
+|---|---|---|
+| **Qué guarda** | **Todos** los intentos, incluidos los que se descartan | Solo los modelos que aspiran a producción |
+| **Pregunta que responde** | ¿Qué probamos, cómo le fue a cada cosa y por qué elegimos esta? | ¿Qué versión está en producción y de dónde salió? |
+| **Quién lo usa más** | Quien explora (ciencia de datos) | Quien despliega y audita (ingeniería, riesgo) |
+
+En el Lab 07 (Paso 3.1), cuatro candidatos se entrenan con BigQuery ML y cada uno queda como un *run* del experimento, con sus parámetros y sus métricas sobre el mismo holdout. Solo el elegido se registra en el registry como v1. Es de las primeras piezas que conviene adoptar en un proyecto real, porque es barata y su ausencia duele pronto.
 
 ### 4.3. Model Registry: Versiones, Alias y Linaje
 
@@ -475,6 +483,7 @@ Los conceptos de los capítulos anteriores existen en todas las plataformas, con
 |---|---|---|
 | Datos | Tablas sintéticas en BigQuery (capa Silver) | Permiten inyectar drift a propósito |
 | Feature Store | Feature Group que registra la tabla de BigQuery (solo offline, sin online store) | Las features vienen en la solicitud; no hace falta buscarlas por llave |
+| Experimentación | Experiments, con un run por candidato (parámetros y métricas) y sin TensorBoard | Se comparan los candidatos con evidencia; sin TensorBoard no hay costo de almacenamiento |
 | Entrenamiento | BigQuery ML (`CREATE MODEL`), con SQL | El modelo se entrena donde viven los datos, sin contenedores ni infraestructura |
 | Registro | Model Registry, con `model_registry = 'VERTEX_AI'` y alias `v1` / `champion` | BigQuery ML registra cada versión automáticamente |
 | Serving | Endpoint online | La pieza más representativa de "modelo en producción" |
@@ -489,6 +498,7 @@ Los conceptos de los capítulos anteriores existen en todas las plataformas, con
 | Decisión | Elegido en el lab | Alternativa | Por qué |
 |---|---|---|---|
 | Cómo entrenar | **BigQuery ML** (`CREATE MODEL`) | Custom training (Python en un contenedor) | El modelo se entrena con SQL, en el mismo lugar donde viven los datos Silver, y se registra solo en el Model Registry con `model_registry = 'VERTEX_AI'`. Custom training agrega unos 30 minutos de setup que no aportan al objetivo del taller |
+| Experimentos | **4 candidatos con BigQuery ML, registrados en Experiments**; solo el elegido va al registry | Entrenar un solo modelo directo al registry | Muestra cómo se elige un modelo con evidencia, y la diferencia entre experimento y registry. Se desactiva el TensorBoard asociado (`experiment_tensorboard=False`) porque solo se registran parámetros y métricas finales |
 | Feature Store | **Solo offline** | Online store | El offline store es BigQuery (sin costo de nodos). El online store solo se justifica cuando el endpoint necesita buscar features por clave en milisegundos |
 | Detección de drift | **PSI calculado con SQL dentro del pipeline** | Model Monitoring gestionado; *feature monitors* del Feature Store | El PSI es transparente (se ve la fórmula), determinístico para una demo en vivo y prácticamente gratis. Las alternativas gestionadas quedan como retos |
 | Quién es el champion | **Alias `champion` en el registry + tabla `champion_historial` en BigQuery**, leídos al inicio de cada ejecución | Parámetro fijo del pipeline | Con un parámetro fijo, tras promover la v2 el pipeline seguiría comparando AUC y midiendo drift contra la v1, que ya no está en producción. El alias dice qué versión sirve; la tabla agrega lo que el alias no guarda (el nombre BigQuery ML para `ML.EVALUATE` y los datos de entrenamiento para el PSI) y deja un historial de promociones |

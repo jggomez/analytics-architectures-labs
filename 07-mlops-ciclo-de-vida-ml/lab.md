@@ -44,11 +44,12 @@ ARQUITECTURA DEL LABORATORIO — FINTECHCO MLOPS
 Al terminar este laboratorio serás capaz de:
 
 1. Registrar features de una tabla Silver de BigQuery en el **Feature Store** (offline) para que sean descubribles y reutilizables.
-2. Entrenar un modelo con **BigQuery ML** y registrarlo automáticamente en el **Model Registry** con versiones.
-3. Desplegar el modelo en un **Endpoint** y obtener predicciones online.
-4. Medir **data drift** con el *Population Stability Index* (PSI) usando SQL.
-5. Construir un **pipeline de Kubeflow (KFP)** con *quality gates*: reentrena solo si hay drift y despliega solo si el modelo nuevo supera al actual.
-6. Ejecutar ese pipeline **manualmente** y **programarlo con cron**.
+2. Probar varios modelos candidatos, registrar cada intento en un **experimento** y compararlos para elegir el mejor.
+3. Entrenar el modelo elegido con **BigQuery ML** y registrarlo automáticamente en el **Model Registry** con versiones.
+4. Desplegar el modelo en un **Endpoint** y obtener predicciones online.
+5. Medir **data drift** con el *Population Stability Index* (PSI) usando SQL.
+6. Construir un **pipeline de Kubeflow (KFP)** con *quality gates*: reentrena solo si hay drift y despliega solo si el modelo nuevo supera al actual.
+7. Ejecutar ese pipeline **manualmente** y **programarlo con cron**.
 
 ### Prerrequisitos
 
@@ -61,11 +62,12 @@ Al terminar este laboratorio serás capaz de:
 
 | Concepto | Recurso en el Lab | ¿Cubierto por capa gratuita? | Estimado |
 |---|---|---|---|
-| **BigQuery ML** (entrenamientos) | 2-3 `CREATE MODEL` sobre unos miles de filas | ✅ Sí (el free tier incluye 10 GiB/mes de `CREATE MODEL`) | **~$0.00** |
+| **BigQuery ML** (entrenamientos) | 6-7 `CREATE MODEL` sobre unos miles de filas (4 candidatos, v1 y los reentrenamientos) | ✅ Sí (el free tier incluye 10 GiB/mes de `CREATE MODEL`) | **~$0.00** |
 | **BigQuery** (datos y consultas) | Tablas de pocos MB, consultas de PSI | ✅ Sí | **~$0.00** |
 | **Feature Store** (solo offline) | Feature Group sobre una tabla BigQuery, sin online store | Sin nodos de serving (los datos viven en BigQuery) | **~$0.00** |
 | **Endpoint** (predicción online) | 1 nodo `n1-standard-2` desplegado ~1-1.5 h | ❌ No: se factura **por hora mientras el modelo esté desplegado** | **~$0.15–0.30** |
 | **Pipelines** | 2-3 ejecuciones del pipeline | ❌ No: cargo pequeño por ejecución más el cómputo de cada componente | **~$0.10–0.30** |
+| **Experimentos** | Un experimento con 4 runs (parámetros y métricas), sin TensorBoard | Metadatos de pocos KB | **~$0.00** |
 | **Cloud Storage** | Artefactos del pipeline | ✅ Sí | **~$0.00** |
 
 > [!WARNING]
@@ -73,13 +75,13 @@ Al terminar este laboratorio serás capaz de:
 
 ---
 
-### Mapa del Laboratorio (~120 minutos)
+### Mapa del Laboratorio (~135 minutos)
 
 ```
 Paso 0  (10 min)  Entorno: variables, APIs, bucket, datasets, permisos, Python
 Paso 1  (10 min)  Datos: generar la capa Silver sintética (historia de 5000 solicitudes)
 Paso 2  (10 min)  Feature Store: registrar las features (offline)
-Paso 3  (10 min)  BigQuery ML: entrenar v1 y registrarla en el Model Registry
+Paso 3  (25 min)  Experimentos: probar 4 candidatos y compararlos; entrenar v1 y registrarla
 Paso 4  (20 min)  Endpoint: desplegar v1 y predecir online
 Paso 5  (10 min)  Drift: generar un lote "sano" y uno "con drift" y compararlos
 Paso 6  (15 min)  Pipeline: construirlo y correrlo con el lote sano (no debe reentrenar)
@@ -291,9 +293,107 @@ Verifícalo en la consola: **Agent Platform → Models → Feature Store → Fea
 
 ---
 
-## Paso 3 — BigQuery ML: Entrenar v1 y Registrarla (10 min)
+## Paso 3 — Experimentos, Entrenar v1 y Registrarla (25 min)
 
-Ejecuta en el editor de BigQuery (o con `bq query --use_legacy_sql=false`):
+### 3.1. Experimentos: probar candidatos, registrarlos y compararlos
+
+Antes de decidir qué modelo va a producción, un equipo de ciencia de datos prueba varias alternativas: otro algoritmo, otras features, otra regularización. El **seguimiento de experimentos** registra cada intento como un *run*, con sus **parámetros** (qué se probó) y sus **métricas** (cómo le fue), para compararlos con evidencia en vez de memoria (ver [teoría §4.2](teoria.md#42-seguimiento-de-experimentos)).
+
+Vamos a probar 4 candidatos, todos entrenados con el mismo 80% de los datos y evaluados sobre **el mismo 20% que ninguno vio**:
+
+| Run | Qué prueba |
+|---|---|
+| `logistica-base` | Regresión logística con las 4 features |
+| `logistica-l2` | La misma, con regularización L2 (penaliza coeficientes grandes) |
+| `logistica-sin-plazo` | Sin `plazo_meses`: ¿esa feature aporta algo? |
+| `arbol-boosted` | Otro algoritmo: árboles de decisión con *boosting* (XGBoost) |
+
+```bash
+cat <<'EOF' > experimentos.py
+"""Entrena 4 modelos candidatos con BigQuery ML, registra cada uno como un run del
+experimento (parámetros + métricas) y los compara. Los candidatos NO van al Model
+Registry: son pruebas. Solo el elegido se registra, en el Paso 3.2."""
+import os
+import time
+
+from google.cloud import aiplatform, bigquery
+
+PROJECT_ID = os.environ["PROJECT_ID"]
+REGION = os.environ["REGION"]
+EXPERIMENTO = "fintech-credit-experimentos"
+TODAS = ["ingreso_mensual_m", "ratio_deuda_ingreso", "score_crediticio", "plazo_meses"]
+
+CANDIDATOS = {
+    "logistica-base": dict(model_type="LOGISTIC_REG", features=TODAS, extra={}),
+    "logistica-l2": dict(model_type="LOGISTIC_REG", features=TODAS, extra={"l2_reg": 1.0}),
+    "logistica-sin-plazo": dict(model_type="LOGISTIC_REG", features=TODAS[:3], extra={}),
+    "arbol-boosted": dict(model_type="BOOSTED_TREE_CLASSIFIER", features=TODAS,
+                          extra={"max_iterations": 20}),
+}
+# Mismo corte que usa el pipeline: el 80% entrena, el 20% (mod 5 = 0) solo evalúa
+FILTRO_TRAIN = "MOD(ABS(FARM_FINGERPRINT(solicitud_id)), 5) != 0"
+FILTRO_HOLDOUT = "MOD(ABS(FARM_FINGERPRINT(solicitud_id)), 5) = 0"
+
+bq = bigquery.Client(project=PROJECT_ID, location=REGION)
+# experiment_tensorboard=False: sin esto, la plataforma crea una instancia de TensorBoard
+# (que cobra almacenamiento) para métricas de series de tiempo que aquí no usamos
+aiplatform.init(project=PROJECT_ID, location=REGION, experiment=EXPERIMENTO,
+                experiment_description="Candidatos para el modelo de riesgo de FinTechCo",
+                experiment_tensorboard=False)
+
+for nombre, c in CANDIDATOS.items():
+    columnas = ", ".join(c["features"])
+    modelo = f"{PROJECT_ID}.fintech_ml.exp_{nombre.replace('-', '_')}"
+    opciones = "".join(f"{k} = {v}, " for k, v in c["extra"].items())
+
+    # El sufijo de tiempo hace único cada run: volver a correr el script agrega runs nuevos
+    with aiplatform.start_run(f"{nombre}-{int(time.time())}"):
+        aiplatform.log_params({"model_type": c["model_type"], "features": columnas,
+                               "n_features": len(c["features"]),
+                               **{k: str(v) for k, v in c["extra"].items()}})
+        print(f"Entrenando {nombre}...")
+        bq.query(f"""
+        CREATE OR REPLACE MODEL `{modelo}`
+        OPTIONS ({opciones}model_type = '{c["model_type"]}', input_label_cols = ['incumplio'])
+        AS SELECT {columnas}, incumplio
+        FROM `{PROJECT_ID}.fintech_silver.solicitudes_historicas` WHERE {FILTRO_TRAIN}
+        """).result()
+
+        fila = list(bq.query(f"""
+        SELECT roc_auc, precision, recall, f1_score, log_loss
+        FROM ML.EVALUATE(MODEL `{modelo}`, (
+          SELECT {columnas}, incumplio
+          FROM `{PROJECT_ID}.fintech_silver.solicitudes_historicas` WHERE {FILTRO_HOLDOUT}))
+        """).result())[0]
+        aiplatform.log_metrics({k: round(float(v), 4) for k, v in fila.items()})
+
+print("\nComparación de runs del experimento (mejor AUC primero):")
+print(f"{'run':<36}{'modelo':<26}{'feat':>5}{'roc_auc':>9}{'log_loss':>10}")
+runs = aiplatform.ExperimentRun.list(experiment=EXPERIMENTO)
+for run in sorted(runs, key=lambda r: r.get_metrics().get("roc_auc", 0), reverse=True):
+    p, m = run.get_params(), run.get_metrics()
+    print(f"{run.name:<36}{p.get('model_type', ''):<26}{p.get('n_features', ''):>5}"
+          f"{m.get('roc_auc', 0):>9.4f}{m.get('log_loss', 0):>10.4f}")
+EOF
+
+python3 experimentos.py
+```
+
+Entrenar los 4 candidatos tarda unos minutos; el árbol es el más lento. Al final verás la tabla de runs ordenada por AUC. Compárala también en la consola: en **Agent Platform**, abre **Experiments** → `fintech-credit-experimentos`, selecciona los runs y pulsa **Compare** para ver parámetros y métricas lado a lado.
+
+Cómo leer la comparación:
+- **Las tres logísticas deberían quedar muy parejas.** Si `logistica-sin-plazo` saca casi el mismo AUC, el plazo aporta poco *hoy*. Guárdalo en mente: en el lote con drift del Paso 5, el plazo pasa a pesar mucho, y un modelo que lo hubiera descartado sufriría más.
+- **El árbol puede ganar o perder por poco.** Los datos sintéticos siguen una relación logística, así que un modelo más complejo no tiene mucho que descubrir.
+- **Elegir no es solo mirar el AUC más alto.** Con diferencias de milésimas, gana el modelo más simple de explicar. En crédito eso pesa: un regulador puede pedir que se justifique por qué se rechazó a alguien, y los coeficientes de una regresión logística se explican solos.
+
+Con estos datos, lo esperable es que **`logistica-base`** quede arriba o empatada con las mejores. Si es así, la elegimos: usa todas las features y es la más fácil de explicar. (Si en tu corrida otro candidato gana con claridad, es una buena discusión para el grupo: ¿lo cambiarías, sabiendo lo que pierdes en explicabilidad?) Esa decisión, con la evidencia de los runs, es la que llevamos a producción en el 3.2.
+
+> [!NOTE]
+> **Experimento ≠ Model Registry.** Los 4 candidatos quedan en el experimento, pero **ninguno** se registra en el Model Registry: el registry es para los modelos que aspiran a producción, no para cada prueba. Por eso estos `CREATE MODEL` no llevan `model_registry = 'VERTEX_AI'`. El experimento responde *"¿qué probamos y por qué elegimos esto?"*; el registry, *"¿qué versión está en producción?"*.
+
+### 3.2. Entrenar v1 y registrarla
+
+Ahora entrenamos el candidato elegido con **todos** los datos históricos y lo registramos como v1. Ejecuta en el editor de BigQuery (o con `bq query --use_legacy_sql=false`):
 
 ```sql
 CREATE OR REPLACE MODEL `fintech_ml.credit_model_v1`
@@ -850,7 +950,7 @@ Esto crea un **schedule** que ejecuta el pipeline todos los días a las 6:00 (UT
 
 ```bash
 cat <<'EOF' > limpiar.py
-"""Borra schedules, endpoint (con sus modelos desplegados), modelos del registry y el Feature Group."""
+"""Borra schedules, endpoint (con sus modelos desplegados), modelos del registry, el experimento y el Feature Group."""
 import os
 
 from google.cloud import aiplatform
@@ -869,6 +969,12 @@ for endpoint in aiplatform.Endpoint.list(filter='display_name="fintech-credit-en
 for modelo in aiplatform.Model.list(filter='display_name="fintech_credit_risk"'):
     print(f"Borrando modelo del registry {modelo.resource_name}")
     modelo.delete()
+
+try:
+    aiplatform.Experiment("fintech-credit-experimentos").delete()
+    print("Experimento borrado")
+except Exception as e:  # puede no existir si saltaste el Paso 3.1
+    print(f"Experimento: {e}")
 
 try:
     feature_store.FeatureGroup("fintech_solicitudes").delete(force=True)
@@ -910,11 +1016,23 @@ Model Monitoring está en la consola en **Agent Platform → Models → Monitori
 
 El SDK del Feature Store tiene `FeatureGroup.create_feature_monitor(...)`, que monitorea la distribución de las features directamente sobre el Feature Group. Explora cómo se compara con el PSI del pipeline: ¿qué ventaja tiene monitorear en el Feature Store, que ven todos los modelos que usan esas features, en vez de dentro del pipeline de un solo modelo?
 
+### Reto 3: Cada ejecución del pipeline como un run del experimento
+
+Hoy el experimento solo tiene los 4 candidatos del Paso 3.1. Haz que cada ejecución del pipeline también quede registrada, para comparar en el mismo lugar los reentrenamientos a lo largo del tiempo: el PSI que los disparó y el AUC del challenger contra el del champion.
+
+<details>
+<summary>👀 Ver Pista de Solución Reto 3</summary>
+
+Hay dos caminos. El más directo: `job.submit(experiment="fintech-credit-experimentos")` en `ejecutar_pipeline.py` asocia la ejecución al experimento y registra sus parámetros. Para que también aparezcan las métricas, agrega un componente al final del pipeline que reciba el PSI y los dos AUC y los registre con `aiplatform.init(experiment=..., experiment_tensorboard=False)`, `aiplatform.start_run(...)` y `aiplatform.log_metrics(...)`. Ese componente necesita `PKGS_AIP`, y la cuenta de servicio del pipeline ya tiene los permisos.
+
+</details>
+
 ---
 
 ## Resumen de lo Aprendido
 
 - **Feature Store (offline) no mueve tus datos:** registra columnas de BigQuery como features con dueño y descripción, para que entrenamiento y serving usen la misma definición.
+- **Un experimento registra cada intento** (parámetros y métricas) para comparar candidatos con evidencia. Los candidatos quedan en el experimento; solo el elegido va al Model Registry.
 - **BigQuery ML + `model_registry='VERTEX_AI'`** lleva un modelo entrenado con SQL directo al Model Registry, con versiones. Versión nueva = mismo `vertex_ai_model_id` + nombre BigQuery ML distinto.
 - **Un endpoint factura por hora mientras exista**, aunque nadie lo use. Es el recurso que más importa limpiar.
 - **Data drift ≠ concept drift.** El PSI detecta que cambiaron las entradas. Saber si el modelo empeoró requiere etiquetas, y esas llegan tarde.
