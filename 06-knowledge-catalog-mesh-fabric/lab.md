@@ -6,11 +6,11 @@
 
 ---
 
-## Codelab — Taller de 90 minutos: "RetailCo, Dos Dominios"
+## Codelab — Taller de 105 minutos: "RetailCo, Dos Dominios"
 
 **RetailCo** tiene dos equipos que generan datos de forma totalmente independiente: **Ventas** (dueño de `sales.orders`) y **Marketing** (dueño de `marketing.campaigns`). Nadie más los edita. Ambos comparten un concepto de negocio — `customer_id` — pero hasta hoy no hay ningún vocabulario común ni forma de descubrir qué existe en el otro dominio sin preguntar por Slack, ni control sobre quién puede ver el monto real de una venta.
 
-En este taller vas a usar **Knowledge Catalog** para resolver todo eso: un glosario de negocio compartido, un "contrato" de gobernanza que cada dominio se autoaplica, un Data Product publicado y descubrible, una búsqueda que cruza ambos dominios, una columna financiera sensible enmascarada para quien no tenga el permiso correcto, y el linaje automático activado entre dominios.
+En este taller vas a usar **Knowledge Catalog** para resolver todo eso: un glosario de negocio compartido, un "contrato" de gobernanza que cada dominio se autoaplica, un Data Product publicado y descubrible, una búsqueda que cruza ambos dominios, una columna financiera sensible enmascarada para quien no tenga el permiso correcto, un escaneo de calidad que verifica que el dominio cumple lo que promete, y el linaje automático activado entre dominios.
 
 ```
 ARQUITECTURA DEL LABORATORIO — RETAILCO
@@ -30,6 +30,7 @@ ARQUITECTURA DEL LABORATORIO — RETAILCO
                  │ • Aspect Type "Domain Contract" │
                  │   (gobierno federado)           │
                  │ • Data Product publicado        │
+                 │ • Calidad de datos (escaneo)    │
                  │ • Búsqueda cruzando dominios    │
                  │ • Policy Tag + enmascaramiento  │
                  │   (sales.orders.amount)         │
@@ -38,7 +39,7 @@ ARQUITECTURA DEL LABORATORIO — RETAILCO
 ```
 
 > [!NOTE]
-> Este es un taller mayormente de **consola** (Knowledge Catalog no tiene comandos `gcloud` dedicados para glosarios/aspectos/data products/policy tags todavía — se gestionan por Console o API REST). Usarás Cloud Shell para crear las tablas de BigQuery, editar el esquema de una columna (Paso 6) y habilitar la API de linaje (Paso 7).
+> Este es un taller mayormente de **consola** (Knowledge Catalog no tiene comandos `gcloud` dedicados para glosarios/aspectos/data products/policy tags todavía — se gestionan por Console o API REST). Usarás Cloud Shell para crear las tablas de BigQuery, crear y ejecutar el escaneo de calidad de datos (Paso 6), editar el esquema de una columna (Paso 7) y habilitar la API de linaje (Paso 8).
 
 ---
 
@@ -52,14 +53,15 @@ Al terminar este laboratorio serás capaz de:
 4. Empaquetar una tabla como **Data Product**: nombre, dueño, activos, y publicarlo para que sea descubrible.
 5. Vincular columnas de tablas de *distintos* dominios al mismo término de glosario.
 6. Buscar en el catálogo cruzando dominios por término de negocio y por campo de aspecto.
-7. Clasificar una columna sensible con una **taxonomía y policy tag**, y aplicarle una regla de **enmascaramiento dinámico** (Hash SHA-256) — viendo la diferencia entre un usuario con permiso de lectura sin máscara y uno sin ese permiso.
-8. Habilitar el **linaje automático** de BigQuery entre tablas de distintos dominios (y entender por qué no se puede verificar en vivo en este mismo taller).
+7. Verificar el contrato de un dominio con un **escaneo de calidad de datos** (reglas declarativas en YAML), publicar el resultado en el catálogo para que lo vean los consumidores e investigar qué filas fallaron.
+8. Clasificar una columna sensible con una **taxonomía y policy tag**, y aplicarle una regla de **enmascaramiento dinámico** (Hash SHA-256) — viendo la diferencia entre un usuario con permiso de lectura sin máscara y uno sin ese permiso.
+9. Habilitar el **linaje automático** de BigQuery entre tablas de distintos dominios (y entender por qué no se puede verificar en vivo en este mismo taller).
 
 ### Prerrequisitos
 
 - Proyecto de Google Cloud con facturación habilitada.
 - Cloud Shell (para las tablas de BigQuery y los comandos de IAM) + acceso a la consola web de Google Cloud.
-- Rol de Owner en el proyecto (más simple para este taller). Si usas un rol más granular, como mínimo necesitas: `roles/dataplex.dataProductsAdmin` (Data Products), `roles/datacatalog.policyTagAdmin` (crear la taxonomía y los policy tags del Paso 6), y `roles/bigquery.admin` (o `roles/bigquery.dataOwner`) + `roles/datacatalog.admin` (o `roles/datacatalog.viewer`) para activar `Enforce access control`.
+- Rol de Owner en el proyecto (más simple para este taller). Si usas un rol más granular, como mínimo necesitas: `roles/dataplex.dataProductsAdmin` (Data Products), `roles/datacatalog.policyTagAdmin` (crear la taxonomía y los policy tags del Paso 7), `roles/dataplex.dataScanAdmin` (escaneo de calidad del Paso 6), y `roles/bigquery.admin` (o `roles/bigquery.dataOwner`) + `roles/datacatalog.admin` (o `roles/datacatalog.viewer`) para activar `Enforce access control`.
 - Conocimientos básicos de SQL. No requiere haber hecho otros módulos de este repositorio.
 
 ### Costo Estimado (FinOps)
@@ -69,15 +71,16 @@ Al terminar este laboratorio serás capaz de:
 | **Business Glossary, Aspect Types, Data Product** | Metadata de gobierno | ✅ Sí — sin costo (ver [teoría §10](teoria.md#10-costos-y-límites)) | **$0.00** |
 | **Búsqueda del catálogo** (incluida en lenguaje natural) | Discovery/search | ✅ Sí — explícitamente sin cargo | **$0.00** |
 | **Taxonomías, Policy Tags y enmascaramiento dinámico** | Clasificación + reglas de máscara | ✅ Sí — GA, sin cargo de licencia aparte del procesamiento normal de BigQuery | **$0.00** |
+| **Escaneo de calidad de datos** (Paso 6) | 3 ejecuciones sobre una tabla de 3-7 filas | ❌ No — se cobra como *premium processing* ($0.089 por DCU-hora, por segundo, mínimo 1 minuto) y no tiene capa gratuita | **~$0.01–0.05** |
 | **Linaje automático de BigQuery** | Metadata de dependencias entre jobs | ✅ Sí — igual que el resto de la metadata técnica auto-ingerida | **$0.00** |
 | **BigQuery** (2 tablas mínimas) | Storage + queries de creación | ✅ Sí (10 GiB / 1 TiB gratis al mes) | **$0.00** |
 
 > [!WARNING]
-> **No hagas clic en "Generate insights" / "Data Insights"** en ningún panel de Knowledge Catalog durante este lab. Esa función usa Gemini y se factura por tokens desde el 27 de octubre de 2026 — no la necesitamos para nada de lo que hacemos aquí. Tampoco actives *discovery scans* automáticos (disparan jobs de Dataflow/Spark facturables). Siguiendo los pasos tal cual, el costo de este laboratorio es **$0.00**.
+> **No hagas clic en "Generate insights" / "Data Insights"** en ningún panel de Knowledge Catalog durante este lab. Esa función usa Gemini y se factura por tokens desde el 27 de octubre de 2026 — no la necesitamos para nada de lo que hacemos aquí. Tampoco actives *discovery scans* automáticos (disparan jobs de Dataflow/Spark facturables). Siguiendo los pasos tal cual, el costo de este laboratorio es de **centavos**: todo es gratis salvo las 3 ejecuciones manuales del escaneo de calidad (Paso 6). No le pongas un horario (`--schedule`) al escaneo: cada ejecución programada se cobra.
 
 ---
 
-### Mapa del Laboratorio (Taller de 90 minutos)
+### Mapa del Laboratorio (Taller de 105 minutos)
 
 ```
 Paso 0  (5 min)   Aprovisionar: 2 tablas BigQuery (sales.orders, marketing.campaigns)
@@ -86,9 +89,10 @@ Paso 2  (10 min)  Aspect Type "Domain Contract" -gobierno federado por dominio
 Paso 3  (10 min)  Vincular columnas de AMBOS dominios al mismo glosario
 Paso 4  (10 min)  Crear y publicar un Data Product (sales.orders)
 Paso 5  (10 min)  Búsqueda cruzando dominios
-Paso 6  (20 min)  Seguridad: Policy Tag + enmascaramiento (Hash) en sales.orders.amount
-Paso 7  (10 min)  Linaje: habilitar Data Lineage API + vista cruzando dominios
-Paso 8  (5 min)   Limpieza + Retos Opcionales
+Paso 6  (15 min)  Calidad de datos: escaneo con reglas, publicado en el catálogo
+Paso 7  (20 min)  Seguridad: Policy Tag + enmascaramiento (Hash) en sales.orders.amount
+Paso 8  (10 min)  Linaje: habilitar Data Lineage API + vista cruzando dominios
+Paso 9  (5 min)   Limpieza + Retos Opcionales
 ```
 
 ---
@@ -244,11 +248,151 @@ Ahora, el momento de verdad: ¿puedes descubrir y filtrar activos de **ambos** d
 
 ---
 
-## Paso 6 — Seguridad: Clasificación y Enmascaramiento (20 min)
+## Paso 6 — Calidad de Datos: el Contrato se Verifica (15 min)
+
+El `Domain Contract` del Paso 2 dice que `sales.orders` está `Published`, pero eso es una **promesa**. Un consumidor de otro dominio necesita **evidencia**: ¿hay órdenes duplicadas?, ¿montos negativos?, ¿ventas sin cliente? Knowledge Catalog la produce con **escaneos de calidad de datos** (*auto data quality*): reglas declarativas que se ejecutan sobre la tabla y cuyo resultado queda **publicado en el catálogo**, junto al resto de la metadata del producto.
+
+### 6.1. Dar acceso al agente de servicio y escribir las reglas
+
+El escaneo no corre con tu usuario: lo ejecuta el **agente de servicio de Knowledge Catalog**, que necesita poder leer la tabla.
+
+```bash
+export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+gcloud beta services identity create --service=dataplex.googleapis.com
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-dataplex.iam.gserviceaccount.com" \
+  --role="roles/bigquery.dataViewer" --condition=None --quiet > /dev/null
+```
+
+Las reglas son el contrato del dominio Ventas escrito como código. Cada una tiene una **dimensión** de calidad (completitud, unicidad, validez…) para que los resultados se puedan agregar y comparar entre dominios:
+
+```bash
+cat <<'EOF' > dq_sales_orders.yaml
+rules:
+- name: order-id-unico
+  column: order_id
+  dimension: UNIQUENESS
+  uniquenessExpectation: {}
+- name: order-id-presente
+  column: order_id
+  dimension: COMPLETENESS
+  nonNullExpectation: {}
+  threshold: 1.0
+- name: cliente-presente
+  column: customer_id
+  dimension: COMPLETENESS
+  nonNullExpectation: {}
+  threshold: 1.0
+- name: cliente-con-formato
+  column: customer_id
+  dimension: VALIDITY
+  ignoreNull: true
+  regexExpectation:
+    regex: '^CUST-[0-9]+$'
+  threshold: 1.0
+- name: monto-positivo
+  column: amount
+  dimension: VALIDITY
+  rangeExpectation:
+    minValue: '0'
+    strictMinEnabled: true
+  threshold: 1.0
+- name: fecha-no-futura
+  dimension: VALIDITY
+  rowConditionExpectation:
+    sqlExpression: order_date <= CURRENT_DATE()
+  threshold: 1.0
+- name: tabla-con-datos
+  dimension: COMPLETENESS
+  tableConditionExpectation:
+    sqlExpression: COUNT(*) > 0
+catalogPublishingEnabled: true
+EOF
+```
+
+| Tipo de regla | Qué evalúa | Ejemplo aquí |
+|---|---|---|
+| `nonNullExpectation`, `rangeExpectation`, `regexExpectation`, `rowConditionExpectation` | **Cada fila**; `threshold` es el % de filas que debe cumplir (1.0 = todas) | Monto positivo, fecha no futura |
+| `uniquenessExpectation` | La columna completa | `order_id` sin duplicados |
+| `tableConditionExpectation` | Una expresión agregada sobre **toda la tabla** | La tabla no está vacía |
+
+`catalogPublishingEnabled: true` es lo que convierte el resultado en metadata del producto: queda visible en la pestaña **Data quality** de la tabla en BigQuery y en su entrada de Knowledge Catalog.
+
+### 6.2. Crear y ejecutar el escaneo
+
+```bash
+gcloud dataplex datascans create data-quality dq-sales-orders \
+  --location="$REGION" \
+  --display-name="Calidad - Sales Orders" \
+  --data-source-resource="//bigquery.googleapis.com/projects/${PROJECT_ID}/datasets/sales/tables/orders" \
+  --data-quality-spec-file=dq_sales_orders.yaml
+
+# Ejecuta el escaneo y espera el resultado (1-2 min)
+run_dq() {
+  gcloud dataplex datascans run dq-sales-orders --location="$REGION" > /dev/null
+  sleep 20
+  JOB=$(gcloud dataplex datascans jobs list --datascan=dq-sales-orders --location="$REGION" \
+        --sort-by=~startTime --limit=1 --format="value(name.basename())")
+  until [[ "$(gcloud dataplex datascans jobs describe "$JOB" --datascan=dq-sales-orders \
+              --location="$REGION" --format='value(state)')" =~ ^(SUCCEEDED|FAILED|CANCELLED)$ ]]; do
+    echo "Escaneo en curso..."; sleep 15
+  done
+  gcloud dataplex datascans jobs describe "$JOB" --datascan=dq-sales-orders --location="$REGION" \
+    --view=FULL --format="yaml(dataQualityResult.passed,dataQualityResult.score,dataQualityResult.rules[].rule.name,dataQualityResult.rules[].passed)"
+}
+run_dq
+```
+
+Con los datos actuales, `passed: true`: las 3 órdenes cumplen todas las reglas. Míralo también en la consola:
+
+1. **BigQuery → `sales.orders` → pestaña Data quality**: el puntaje y cada regla con su resultado. Esto es lo que ve un **consumidor** de otro dominio antes de pedir acceso al Data Product del Paso 4.
+2. **Knowledge Catalog → Data profiling & quality → `Calidad - Sales Orders`**: el historial de ejecuciones, para quien opera el escaneo.
+
+### 6.3. El dominio publica datos rotos
+
+El sistema de Ventas sufre un error y carga 4 órdenes malas:
+
+```bash
+bq query --use_legacy_sql=false <<'EOF'
+INSERT INTO `sales.orders` (order_id, customer_id, amount, order_date) VALUES
+  ('ORD-003', 'CUST-03',   60.00, DATE '2026-09-12'),  -- order_id duplicado
+  ('ORD-004', NULL,        75.00, DATE '2026-09-15'),  -- venta sin cliente
+  ('ORD-005', 'CUST-02',  -20.00, DATE '2026-09-16'),  -- monto negativo
+  ('ORD-006', 'cliente 7', 30.00, DATE '2099-01-01');  -- cliente mal formado y fecha futura
+EOF
+
+run_dq
+```
+
+Ahora `passed: false`, y fallan `order-id-unico`, `cliente-presente`, `cliente-con-formato`, `monto-positivo` y `fecha-no-futura`. `tabla-con-datos` sigue pasando. En la consola, cada regla fallida trae una **consulta para obtener las filas que fallaron** (*failed records query*): ábrela y ejecútala para ver exactamente qué órdenes rompieron cada regla.
+
+> [!IMPORTANT]
+> El escaneo **no borra ni bloquea** las filas malas: **mide y publica**. Esa es la diferencia con una puerta de calidad dentro de un pipeline (las assertions de Dataform del [Módulo 01](../01-patrones-y-modelado/lab.md#45-capa-de-control-assertions) o la puerta del [Módulo 09](../09-lakehouse-airflow-spark/lab.md#33-la-puerta-de-calidad-escaneos-de-knowledge-catalog), que impide publicar). En un Data Mesh, ambas cosas conviven: el dominio productor **bloquea** en su pipeline, y el catálogo **muestra** a todos los consumidores la calidad de lo que se publicó.
+
+### 6.4. El dominio corrige y la evidencia se actualiza
+
+```bash
+bq query --use_legacy_sql=false <<'EOF'
+DELETE FROM `sales.orders`
+WHERE order_id IN ('ORD-004', 'ORD-005', 'ORD-006')
+   OR (order_id = 'ORD-003' AND customer_id = 'CUST-03');
+EOF
+
+run_dq
+```
+
+Vuelve a `passed: true`, y la pestaña **Data quality** muestra la ejecución nueva sobre las anteriores: el historial queda como **evidencia auditable** de cuándo el producto incumplió su contrato y cuándo se corrigió.
+
+> [!NOTE]
+> Este escaneo corre **antes** del Paso 7 a propósito. Cuando `amount` quede protegida por un policy tag, el agente de servicio de Knowledge Catalog necesitará además permiso sobre esa columna (por ejemplo, `roles/datacatalog.categoryFineGrainedReader` sobre el policy tag) para volver a evaluar `monto-positivo`. Seguridad y calidad se configuran **juntas**: una columna que nadie puede leer tampoco se puede validar.
+
+---
+
+## Paso 7 — Seguridad: Clasificación y Enmascaramiento (20 min)
 
 Hasta aquí, cualquiera con acceso a `sales.orders` ve el monto real de cada venta. Vamos a clasificar la columna `amount` como dato financiero sensible y aplicarle una regla de enmascaramiento — sin tocar el Data Product ni el Glosario que ya construiste.
 
-### 6.1. Crear la taxonomía y el policy tag
+### 7.1. Crear la taxonomía y el policy tag
 
 1. Ve a **Bigquery → Policy tag taxonomies** (o busca "Policy tag taxonomies" en el buscador de la consola).
 2. Clic en **Create taxonomy**.
@@ -264,7 +408,7 @@ Hasta aquí, cualquiera con acceso a `sales.orders` ve el monto real de cada ven
 
 5. Dentro de la taxonomía `RetailCo Data Classification`, clic en **Enforce access control** (si no está ya activado).
 
-### 6.2. Adjuntar el policy tag a la columna `amount`
+### 7.2. Adjuntar el policy tag a la columna `amount`
 
 BigQuery no permite asignar policy tags desde `CREATE TABLE` — hay que editar el esquema:
 
@@ -292,7 +436,7 @@ Reemplaza `TU_PROYECTO_ID` y el `TAXONOMY_ID`/`POLICYTAG_ID` que veas en la cons
 bq update "${PROJECT_ID}:sales.orders" orders_schema.json
 ```
 
-### 6.3. Crear la regla de enmascaramiento
+### 7.3. Crear la regla de enmascaramiento
 
 1. Vuelve a **Bigquery → Policy tag taxonomies** → `RetailCo Data Classification` → policy tag `Confidential Financial`.
 2. Clic en **Manage Data Policies**.
@@ -301,20 +445,20 @@ bq update "${PROJECT_ID}:sales.orders" orders_schema.json
    - **Principal:** tu propio correo (o un Google Group que tengas a mano)
 3. **Submit**. La consola te otorga automáticamente el rol **BigQuery Masked Reader** a ese principal.
 
-### 6.4. Verificar el antes y el después
+### 7.4. Verificar el antes y el después
 
 ```sql
 SELECT order_id, amount FROM `TU_PROYECTO_ID.sales.orders`;
 ```
 
-Con solo el rol **Masked Reader** (lo que acabas de recibir en 6.3), la columna `amount` te devuelve el hash SHA-256, no el número real. Si además te otorgas el rol **Data Catalog Fine-Grained Reader** (`roles/datacatalog.categoryFineGrainedReader`) sobre ese mismo policy tag — desde la pestaña de permisos IAM del policy tag en la consola — la misma consulta te devuelve el `amount` real, sin máscara.
+Con solo el rol **Masked Reader** (lo que acabas de recibir en 7.3), la columna `amount` te devuelve el hash SHA-256, no el número real. Si además te otorgas el rol **Data Catalog Fine-Grained Reader** (`roles/datacatalog.categoryFineGrainedReader`) sobre ese mismo policy tag — desde la pestaña de permisos IAM del policy tag en la consola — la misma consulta te devuelve el `amount` real, sin máscara.
 
 > [!NOTE]
 > Sin **ninguno** de los dos roles sobre el policy tag, la consulta directamente **falla** al tocar la columna `amount` — ni la ves enmascarada ni real. Los tres estados (real / enmascarado / denegado) son intencionales: es la forma en que BigQuery aplica "necesito saber" a nivel de columna, no solo de tabla.
 
 ---
 
-## Paso 7 — Linaje: Habilitar y Conectar Dominios (10 min)
+## Paso 8 — Linaje: Habilitar y Conectar Dominios (10 min)
 
 ```bash
 gcloud services enable datalineage.googleapis.com
@@ -340,9 +484,10 @@ GROUP BY o.customer_id;
 
 ---
 
-## Paso 8 — Limpieza (5 min)
+## Paso 9 — Limpieza (5 min)
 
 ```bash
+gcloud dataplex datascans delete dq-sales-orders --location="$REGION" --quiet
 bq rm --recursive --force "${PROJECT_ID}:sales"
 bq rm --recursive --force "${PROJECT_ID}:marketing"
 ```
@@ -355,7 +500,7 @@ Luego, en la consola de Google Cloud:
 5. Elimina la taxonomía `RetailCo Data Classification`.
 
 > [!NOTE]
-> A diferencia de otros módulos de este repositorio, aquí no hay ninguna instancia de cómputo (Cloud SQL, Dataflow, Datastream) corriendo en segundo plano — todo lo creado en este lab es metadata gratuita, así que la limpieza es por prolijidad, no por costo.
+> A diferencia de otros módulos de este repositorio, aquí no hay ninguna instancia de cómputo (Cloud SQL, Dataflow, Datastream) corriendo en segundo plano — todo lo creado en este lab es metadata gratuita salvo el escaneo de calidad, que solo cobra cuando se ejecuta (y no tiene horario). La limpieza es por prolijidad, no por costo.
 
 ---
 
@@ -396,7 +541,7 @@ Lo primero que se rompe con un Sheet manual es el principio #4 (gobierno federad
 
 ### Reto 4: Enmascara también `marketing.campaigns.spend`
 
-Repite el Paso 6 completo para la columna `spend` de Marketing, pero esta vez usa la regla **`Default masking value`** en vez de `Hash (SHA-256)`. Compara qué tan fácil es para alguien deducir información con cada tipo de máscara (ej. ¿un `0` repetido en todas las filas filtra menos o más que un hash distinto por fila?).
+Repite el Paso 7 completo para la columna `spend` de Marketing, pero esta vez usa la regla **`Default masking value`** en vez de `Hash (SHA-256)`. Compara qué tan fácil es para alguien deducir información con cada tipo de máscara (ej. ¿un `0` repetido en todas las filas filtra menos o más que un hash distinto por fila?).
 
 <details>
 <summary>👀 Ver Pista de Solución Reto 4</summary>
@@ -416,6 +561,17 @@ Elegirías la ruta open-source si RetailCo no viviera 100% en Google Cloud — p
 
 </details>
 
+### Reto 6: Reglas sugeridas a partir de un perfil
+
+Crea un **escaneo de perfil** (*data profiling*) sobre `marketing.campaigns` y usa **Add rules → Profile based recommendations** para que Knowledge Catalog proponga reglas a partir de los datos reales (rangos, valores permitidos, nulos). Compara las reglas sugeridas con las que escribiste a mano en el Paso 6.
+
+<details>
+<summary>👀 Ver Pista de Solución Reto 6</summary>
+
+El perfil también se cobra como *premium processing*, igual que el escaneo de calidad. Las recomendaciones son un buen punto de partida, pero **describen los datos que hay, no los que deberían haber**: si hoy todos los `spend` son menores a 50, la regla sugerida `spend <= 50` rompería mañana con una campaña legítima más grande. Las reglas de un contrato las decide el dueño del dominio; el perfil solo le ahorra escribirlas desde cero.
+
+</details>
+
 ---
 
 ## Resumen de lo Aprendido
@@ -423,6 +579,7 @@ Elegirías la ruta open-source si RetailCo no viviera 100% en Google Cloud — p
 - **Data Mesh es una decisión organizacional** (quién es dueño, cómo se publica) — **Data Fabric es la tecnología** (cómo se descubre y conecta automáticamente). Knowledge Catalog es la pieza de Fabric de Google Cloud, con el recurso `Data Product` diseñado específicamente para operacionalizar Mesh encima.
 - **El vocabulario compartido (Glosario) y el gobierno federado (Aspect Types) no requieren centralizar el dato** — cada dominio sigue siendo dueño de su tabla, pero ambos hablan el mismo idioma y se auditan con el mismo formato.
 - **La búsqueda cruzando dominios es lo que hace que Mesh escale** — sin ella, cada dominio nuevo es un silo más que hay que descubrir preguntando, no buscando.
+- **Un contrato sin verificación es solo una promesa:** el escaneo de calidad convierte las reglas del dominio en evidencia publicada en el catálogo, visible para cualquier consumidor. Mide y publica; no bloquea. Bloquear le corresponde al pipeline del dominio productor.
 - **El enmascaramiento dinámico es gobierno federado aplicado a seguridad:** la regla vive pegada al dato (vía Policy Tag), no en un documento de políticas separado — y requiere activar explícitamente "Enforce access control", algo fácil de olvidar.
 - **El linaje automático de BigQuery no es instantáneo** — hasta 24h de retraso — así que en un entorno real lo configuras una vez y lo consultas después, no lo verificas en la misma sesión en la que corriste la query.
 - **OpenLineage es el estándar abierto para linaje multi-herramienta**; Amundsen (el catálogo open-source de Lyft) fue archivado en septiembre de 2026 — si necesitas un catálogo self-hosted y vendor-neutral hoy, DataHub es la alternativa activa a evaluar.
@@ -442,4 +599,7 @@ Elegirías la ruta open-source si RetailCo no viviera 100% en Google Cloud — p
 - [Restrict access with column-level access control](https://docs.cloud.google.com/bigquery/docs/column-level-security)
 - [Introduction to data masking](https://docs.cloud.google.com/bigquery/docs/column-data-masking-intro)
 - [View data lineage for Google Cloud systems](https://docs.cloud.google.com/dataplex/docs/use-lineage)
+- [Auto data quality overview](https://docs.cloud.google.com/knowledge-catalog/docs/auto-data-quality-overview)
+- [Use auto data quality (reglas en YAML)](https://docs.cloud.google.com/dataplex/docs/use-auto-data-quality)
+- [Knowledge Catalog pricing (premium processing)](https://cloud.google.com/dataplex/pricing)
 - [OpenLineage](https://openlineage.io/)
