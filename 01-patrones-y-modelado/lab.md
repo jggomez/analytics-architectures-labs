@@ -55,7 +55,8 @@ Al terminar este laboratorio serás capaz de:
 2. Leer correctamente la columna `datastream_metadata` (STRUCT) que Datastream agrega a cada tabla destino en BigQuery.
 3. Deduplicar eventos CDC en la capa Silver con `ROW_NUMBER() OVER (... ORDER BY datastream_metadata.source_timestamp DESC)`.
 4. Modelar la capa Gold siguiendo Kimball: una dimensión con clave subrogada (`dim_usuarios`) y una tabla de hechos (`fact_solicitudes`) que las conecta.
-5. Conectar Looker Studio al data mart resultante.
+5. Construir una **capa de control con assertions de Dataform** que valida Silver y Gold y **bloquea** la carga de la tabla de hechos cuando llegan datos malos.
+6. Conectar Looker Studio al data mart resultante.
 
 ### Prerrequisitos
 
@@ -78,14 +79,14 @@ Al terminar este laboratorio serás capaz de:
 
 ---
 
-### Mapa del Laboratorio (~100 minutos)
+### Mapa del Laboratorio (~110 minutos)
 
 ```
 Paso 0  (10 min)  Aprovisionar el entorno (variables, APIs)
 Paso 1  (15 min)  Cloud SQL: esquema, datos y replicación lógica
 Paso 2  (20 min)  Datastream: stream CDC (append-only) hacia BigQuery
 Paso 3  (10 min)  Verificar la capa Raw y simular CDC en vivo
-Paso 4  (25 min)  Dataform: Silver (dedup) y Gold (Kimball)
+Paso 4  (35 min)  Dataform: Silver (dedup), Gold (Kimball) y capa de control (assertions)
 Paso 5  (10 min)  Looker Studio: dashboard
 Paso 6  (10 min)  Limpieza + Retos Opcionales
 ```
@@ -298,7 +299,7 @@ En 15-30 segundos aparecerá un nuevo registro en `core_usuarios` para `USR-1001
 
 ---
 
-## Paso 4 — Dataform: Silver (Deduplicación) y Gold (Kimball) (25 min)
+## Paso 4 — Dataform: Silver (Deduplicación), Gold (Kimball) y Capa de Control (35 min)
 
 ### 4.1. Crear el repositorio y workspace de Dataform
 
@@ -433,18 +434,29 @@ SELECT
   FARM_FINGERPRINT(CONCAT(usuario_id, CAST(fecha_inicio_vigencia AS STRING))) AS usuario_sk,
   *
 FROM
-  datos_actuales
+  datos_actuales d
+${when(incremental(), `
+-- En las ejecuciones incrementales solo entra un usuario nuevo o uno cuyos atributos cambiaron
+WHERE NOT EXISTS (
+  SELECT 1 FROM ${self()} t
+  WHERE t.usuario_id = d.usuario_id
+    AND t.es_registro_actual
+    AND t.nombre_completo = d.nombre_completo
+    AND t.ciudad_residencia = d.ciudad_residencia
+    AND t.score_crediticio = d.score_crediticio
+    AND t.ingreso_mensual = d.ingreso_mensual)`)}
 ```
 
 > [!NOTE]
-> Esta versión es una simplificación didáctica (siempre inserta una fila "vigente" nueva) — no implementa el `MERGE` completo de SCD Tipo 2 con cierre de vigencias. Verás el patrón `MERGE` real, con `valid_from`/`valid_to`, en [teoría §6.3](teoria.md#63-slowly-changing-dimensions-scd-gestión-de-historial) — implementarlo aquí es el **Reto 2**.
+> Esta versión es una simplificación didáctica: re-ejecutarla sin cambios no agrega filas (gracias al `WHERE NOT EXISTS` incremental), pero cuando un usuario cambia, inserta la versión nueva **sin cerrar la anterior**. No implementa el `MERGE` completo de SCD Tipo 2 con cierre de vigencias. La assertion `assert_una_version_vigente` del Paso 4.5 detecta justamente ese caso. Verás el patrón `MERGE` real, con `valid_from`/`valid_to`, en [teoría §6.3](teoria.md#63-slowly-changing-dimensions-scd-gestión-de-historial) — implementarlo aquí es el **Reto 2**.
 
 **Archivo: `definitions/gold/fact_solicitudes.sqlx`**
 
 ```sql
 config {
     type: "incremental",
-    schema: "dm_creditos"
+    schema: "dm_creditos",
+    uniqueKey: ["solicitud_id"]
 }
 
 SELECT
@@ -465,9 +477,143 @@ ON
   AND u.es_registro_actual = TRUE
 ```
 
-### 4.5. Ejecutar
+> [!NOTE]
+> `uniqueKey: ["solicitud_id"]` convierte cada ejecución incremental en un `MERGE` por solicitud: re-ejecutar Dataform no duplica filas, y si una solicitud cambia de estado (por ejemplo, de `PENDIENTE` a `APROBADO`) se actualiza en vez de agregarse otra vez.
 
-En el workspace de Dataform, clic en **Start execution** → selecciona todas las acciones (`stg_usuarios`, `stg_solicitudes`, `dim_usuarios`, `fact_solicitudes`) → **Execute**. Dataform calcula el orden de dependencias automáticamente a partir de los `${ref(...)}` — no necesitas correrlas en un orden manual.
+### 4.5. Capa de control: assertions
+
+Hasta aquí, Dataform construye las tablas **aunque los datos estén mal**: si el origen manda una solicitud con monto `0` o un plazo de `0` meses, llega intacta hasta el tablero del CEO. Una **assertion** es una consulta que devuelve las filas que **violan** una regla. Si devuelve cero filas, pasa; si devuelve alguna, falla. Dataform tiene dos tipos:
+
+| Tipo | Dónde se declara | Para qué |
+|---|---|---|
+| **Integrada** (`assertions: {…}` en el `config`) | En el mismo archivo del modelo | Reglas comunes sobre una tabla: unicidad (`uniqueKey`), no nulos (`nonNull`), condiciones por fila (`rowConditions`) |
+| **Manual** (`type: "assertion"`) | En su propio archivo `.sqlx` | Reglas que cruzan tablas o requieren lógica propia: integridad referencial, una sola versión vigente, conciliaciones |
+
+**1. Assertions integradas en Silver.** Agrega el bloque `assertions` al `config` de los dos modelos de Silver (el SQL de cada archivo no cambia):
+
+**Archivo: `definitions/silver/stg_usuarios.sqlx`** (solo el `config`)
+
+```sql
+config {
+    type: "table",
+    schema: "silver",
+    description: "Usuarios deduplicados: se queda el evento más reciente por usuario_id",
+    assertions: {
+        uniqueKey: ["usuario_id"],
+        nonNull: ["usuario_id", "nombre_completo", "score_crediticio", "ingreso_mensual"],
+        rowConditions: [
+            "score_crediticio BETWEEN 300 AND 850",
+            "ingreso_mensual > 0"
+        ]
+    }
+}
+```
+
+**Archivo: `definitions/silver/stg_solicitudes.sqlx`** (solo el `config`)
+
+```sql
+config {
+    type: "table",
+    schema: "silver",
+    description: "Solicitudes deduplicadas: se queda el evento más reciente por solicitud_id",
+    assertions: {
+        uniqueKey: ["solicitud_id"],
+        nonNull: ["solicitud_id", "cliente_id", "monto_solicitado", "plazo_meses", "estado_solicitud"],
+        rowConditions: [
+            "monto_solicitado > 0",
+            "plazo_meses BETWEEN 1 AND 120",
+            "estado_solicitud IN ('APROBADO', 'RECHAZADO', 'PENDIENTE')",
+            "estado_solicitud != 'APROBADO' OR tasa_interes IS NOT NULL"
+        ]
+    }
+}
+```
+
+La última regla es una **regla de negocio**, no de formato: una solicitud aprobada sin tasa de interés no se puede cobrar. Este tipo de regla es la que más valor aporta, porque ninguna restricción de la base de datos la expresa.
+
+**2. Assertions manuales en Gold.**
+
+**Archivo: `definitions/assertions/assert_una_version_vigente.sqlx`**
+
+```sql
+config {
+    type: "assertion",
+    description: "Cada usuario debe tener exactamente UNA versión vigente en dim_usuarios"
+}
+
+SELECT
+  usuario_id,
+  COUNT(*) AS versiones_vigentes
+FROM
+  ${ref("dim_usuarios")}
+WHERE
+  es_registro_actual
+GROUP BY
+  usuario_id
+HAVING
+  COUNT(*) > 1
+```
+
+**Archivo: `definitions/assertions/assert_solicitudes_con_usuario.sqlx`**
+
+```sql
+config {
+    type: "assertion",
+    description: "Integridad referencial: toda solicitud de la tabla de hechos debe tener un usuario en la dimensión"
+}
+
+SELECT
+  solicitud_id,
+  fecha_solicitud
+FROM
+  ${ref("fact_solicitudes")}
+WHERE
+  usuario_sk IS NULL
+```
+
+**3. Convertir las assertions en una puerta.** Por defecto, una assertion que falla **avisa pero no detiene nada**: la tabla de hechos se cargaría igual. Para que una tabla solo se construya si las validaciones de lo que lee pasan, sus assertions tienen que ser **dependencias** de esa tabla. Actualiza el `config` de los dos modelos de Gold:
+
+**Archivo: `definitions/gold/dim_usuarios.sqlx`** (solo el `config`)
+
+```sql
+config {
+    type: "incremental",
+    schema: "edw_core",
+    uniqueKey: ["usuario_id", "fecha_inicio_vigencia"],
+    dependOnDependencyAssertions: true
+}
+```
+
+**Archivo: `definitions/gold/fact_solicitudes.sqlx`** (solo el `config`)
+
+```sql
+config {
+    type: "incremental",
+    schema: "dm_creditos",
+    uniqueKey: ["solicitud_id"],
+    dependOnDependencyAssertions: true,
+    dependencies: ["assert_una_version_vigente"]
+}
+```
+
+- **`dependOnDependencyAssertions: true`** convierte en dependencias todas las assertions integradas de las tablas que el modelo lee con `${ref()}`. Así, `dim_usuarios` espera a las de `stg_usuarios`, y `fact_solicitudes` espera a las de `stg_solicitudes`.
+- **`dependencies: ["assert_una_version_vigente"]`** agrega una assertion manual. Hace falta nombrarla explícitamente porque no "pertenece" a ninguna tabla que el modelo lea.
+- `assert_solicitudes_con_usuario` corre **después** de cargar los hechos: no puede bloquear su propia tabla, pero sí avisar. Es una auditoría posterior a la carga.
+
+```
+                  ┌─ assertions stg_usuarios ─┐
+stg_usuarios ─────┤                           ├──► dim_usuarios ──► assert_una_version_vigente ─┐
+                  └───────────────────────────┘                                                  │
+                  ┌─ assertions stg_solicitudes ┐                                                ▼
+stg_solicitudes ──┤                             ├──────────────────────────────────────► fact_solicitudes ──► assert_solicitudes_con_usuario
+                  └─────────────────────────────┘
+```
+
+### 4.6. Ejecutar
+
+En el workspace de Dataform, clic en **Start execution** → selecciona todas las acciones (`stg_usuarios`, `stg_solicitudes`, `dim_usuarios`, `fact_solicitudes` y las assertions) → **Execute**. Dataform calcula el orden de dependencias automáticamente a partir de los `${ref(...)}` y de los `dependencies` — no necesitas correrlas en un orden manual.
+
+En el grafo de la ejecución vas a ver las assertions como acciones propias, con nombres como `silver_stg_solicitudes_assertions_rowConditions` y `silver_stg_solicitudes_assertions_uniqueKey_0` (el patrón es `<dataset>_<tabla>_assertions_<tipo>`). Todas deben terminar en verde. Dataform guarda cada assertion como una **vista** en el dataset `dataform_assertions` (el dataset de assertions que define `workflow_settings.yaml`): puedes consultarla en cualquier momento para ver qué filas violan la regla.
 
 Valida el resultado:
 
@@ -476,7 +622,47 @@ SELECT * FROM `edw_core.dim_usuarios` ORDER BY usuario_id, fecha_inicio_vigencia
 SELECT * FROM `dm_creditos.fact_solicitudes` ORDER BY fecha_solicitud;
 ```
 
-Deberías ver a `USR-1001` (Laura) con **dos filas** en `dim_usuarios` si ya hiciste el `UPDATE` del Paso 3 antes de ejecutar Dataform, y sus solicitudes en `fact_solicitudes` correctamente enlazadas por `usuario_sk`.
+Deberías ver una fila vigente por usuario en `dim_usuarios` (la de `USR-1001`, Laura, ya con Cali y score 790 si hiciste el `UPDATE` del Paso 3), y sus solicitudes en `fact_solicitudes` correctamente enlazadas por `usuario_sk`.
+
+### 4.7. Probar la capa de control: llega un dato malo
+
+Un error en la app de originación registra una solicitud **aprobada con monto 0, plazo 0 y sin tasa**. Vuelve a `gcloud sql connect fintech-pg-instance --user=postgres --database=fintech_db` y ejecuta:
+
+```sql
+INSERT INTO core.transacciones_solicitud (cliente_id, monto_solicitado, plazo_meses, estado_solicitud, tasa_interes)
+VALUES ('USR-1003', 0, 0, 'APROBADO', NULL);
+```
+
+Espera 30 segundos a que Datastream lo replique y vuelve a ejecutar **todas las acciones** en Dataform. Esta vez:
+
+- `stg_solicitudes` se reconstruye ✅ (la tabla Silver sí se escribe).
+- `silver_stg_solicitudes_assertions_rowConditions` **falla** ❌.
+- `fact_solicitudes` queda **omitida** (no se ejecuta), porque depende de esa assertion.
+- `dim_usuarios` y `assert_una_version_vigente` pasan: el problema está en las solicitudes, no en los usuarios.
+
+Diagnostica qué filas rompieron qué regla consultando la vista de la assertion:
+
+```sql
+SELECT * FROM `dataform_assertions.silver_stg_solicitudes_assertions_rowConditions`;
+
+-- La tabla de hechos NO tiene la solicitud mala: el tablero sigue mostrando datos consistentes
+SELECT COUNT(*) AS solicitudes, COUNTIF(monto_solicitado = 0) AS con_monto_cero
+FROM `dm_creditos.fact_solicitudes`;
+```
+
+> [!IMPORTANT]
+> Esta es la diferencia entre una assertion que **avisa** y una capa de control que **protege**. Sin las `dependencies`, Dataform habría marcado la assertion en rojo y aun así habría cargado la solicitud mala en `fact_solicitudes`. Con ellas, Silver se actualiza (y se puede inspeccionar), pero **Gold no recibe datos que no pasaron las reglas**.
+
+Corrige el dato en el origen. El borrado viaja por CDC como un evento `DELETE`, y `stg_solicitudes` lo excluye:
+
+```sql
+DELETE FROM core.transacciones_solicitud WHERE monto_solicitado = 0;
+```
+
+Espera 30 segundos y ejecuta otra vez todas las acciones: ahora todo queda en verde y `fact_solicitudes` se vuelve a cargar.
+
+> [!TIP]
+> **¿Qué pasa si un usuario cambia?** Ejecuta `UPDATE core.usuarios SET score_crediticio = 800 WHERE usuario_id = 'USR-1002';` y vuelve a correr Dataform. `dim_usuarios` inserta la versión nueva **sin cerrar la anterior** (la simplificación del Paso 4.4), `assert_una_version_vigente` falla y `fact_solicitudes` no se carga. La assertion encontró un defecto real del modelo. El Reto 2 lo corrige con un SCD2 de verdad.
 
 ---
 
@@ -536,7 +722,7 @@ La extensión crea una tabla de *changelog* (`<coleccion>_raw_changelog`) y una 
 
 ### Reto 2: Implementa el SCD Tipo 2 real con `MERGE`
 
-Reemplaza el `dim_usuarios.sqlx` simplificado del Paso 4.4 por el patrón `MERGE` completo de [teoría §6.3](teoria.md#63-slowly-changing-dimensions-scd-gestión-de-historial), cerrando la vigencia (`valid_to`, `is_current = FALSE`) de la versión anterior cuando cambie `ciudad_residencia` o `score_crediticio`.
+Reemplaza el `dim_usuarios.sqlx` simplificado del Paso 4.4 por el patrón `MERGE` completo de [teoría §6.3](teoria.md#63-slowly-changing-dimensions-scd-gestión-de-historial), cerrando la vigencia (`valid_to`, `is_current = FALSE`) de la versión anterior cuando cambie `ciudad_residencia` o `score_crediticio`. Sabrás que funciona cuando `assert_una_version_vigente` (Paso 4.5) pase después de actualizar un usuario.
 
 <details>
 <summary>👀 Ver Pista de Solución Reto 2</summary>
@@ -556,5 +742,7 @@ Ejecuta `DELETE FROM core.transacciones_solicitud WHERE estado_solicitud = 'RECH
 - [Datastream — Destino BigQuery](https://docs.cloud.google.com/datastream/docs/destination-bigquery)
 - [Datastream — Create connection profiles](https://docs.cloud.google.com/datastream/docs/create-connection-profiles)
 - [Dataform — Incremental tables](https://cloud.google.com/dataform/docs/incremental-tables)
+- [Dataform — Test data quality with assertions](https://docs.cloud.google.com/dataform/docs/assertions)
+- [Dataform — Declare dependencies (assertions como dependencias)](https://docs.cloud.google.com/dataform/docs/dependencies)
 - [Dataform — Operations (MERGE, DDL/DML custom)](https://cloud.google.com/dataform/docs/define-operations)
 - [Firebase Extension — Export Collections to BigQuery](https://extensions.dev/extensions/firebase/firestore-bigquery-export)
