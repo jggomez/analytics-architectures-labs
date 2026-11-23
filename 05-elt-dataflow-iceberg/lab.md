@@ -358,7 +358,7 @@ En 15-30 segundos aparecerá un nuevo archivo Avro en `bronze-cdc/orders/` con e
 Ejecuta en el editor SQL de BigQuery (reemplaza `TU_PROYECTO_ID` y `TU_BUCKET`):
 
 ```sql
-CREATE OR REPLACE TABLE `TU_PROYECTO_ID.bronze.orders` (
+CREATE OR REPLACE TABLE `${PROJECT_ID}.bronze.orders` (
   order_id          STRING,
   customer_id       STRING,
   product_id        STRING,
@@ -370,20 +370,20 @@ CREATE OR REPLACE TABLE `TU_PROYECTO_ID.bronze.orders` (
   is_deleted        BOOL,
   source_timestamp  STRING
 )
-WITH CONNECTION `TU_PROYECTO_ID.us-central1.lab05_conn`
-OPTIONS (file_format = 'PARQUET', table_format = 'ICEBERG', storage_uri = 'gs://TU_BUCKET/iceberg/bronze/orders');
+WITH CONNECTION `${PROJECT_ID}.us-central1.lab05_conn`
+OPTIONS (file_format = 'PARQUET', table_format = 'ICEBERG', storage_uri = 'gs://${BUCKET}/iceberg/bronze/orders');
 
-CREATE OR REPLACE TABLE `TU_PROYECTO_ID.bronze.customers` (
+CREATE OR REPLACE TABLE `${PROJECT_ID}.bronze.customers` (
   customer_id STRING, name STRING, city STRING, segment STRING
 )
-WITH CONNECTION `TU_PROYECTO_ID.us-central1.lab05_conn`
-OPTIONS (file_format = 'PARQUET', table_format = 'ICEBERG', storage_uri = 'gs://TU_BUCKET/iceberg/bronze/customers');
+WITH CONNECTION `${PROJECT_ID}.us-central1.lab05_conn`
+OPTIONS (file_format = 'PARQUET', table_format = 'ICEBERG', storage_uri = 'gs://${BUCKET}/iceberg/bronze/customers');
 
-CREATE OR REPLACE TABLE `TU_PROYECTO_ID.bronze.products` (
+CREATE OR REPLACE TABLE `${PROJECT_ID}.bronze.products` (
   product_id STRING, name STRING, category STRING, unit_cost STRING
 )
-WITH CONNECTION `TU_PROYECTO_ID.us-central1.lab05_conn`
-OPTIONS (file_format = 'PARQUET', table_format = 'ICEBERG', storage_uri = 'gs://TU_BUCKET/iceberg/bronze/products');
+WITH CONNECTION `${PROJECT_ID}.us-central1.lab05_conn`
+OPTIONS (file_format = 'PARQUET', table_format = 'ICEBERG', storage_uri = 'gs://${BUCKET}/iceberg/bronze/products');
 ```
 
 > [!NOTE]
